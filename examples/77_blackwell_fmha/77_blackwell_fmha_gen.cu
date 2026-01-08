@@ -205,7 +205,7 @@ struct Options {
       << "  --h=<int>                   Sets the H extent\n"
       << "  --h_k=<int>                 Sets the H_K/V extent (for GQA/MQA)\n"
       << "  --k=<int>                   Sets the K extent (sampled around this length)\n"
-      << "  --d=<int>                   Sets the D extentn"
+      << "  --d=<int>                   Sets the D extent\n"
       << "  --iterations=<int>          Benchmarking iterations\n"
       << "  --verify                    Verify results\n"
       << "  --verbose                   Print smem and execution time per kernel\n"
