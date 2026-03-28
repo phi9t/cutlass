@@ -1,6 +1,6 @@
 # Layer 5 — Transformer block + GPT model.
 
-package(default_visibility = ["//src:__subpackages__"])
+package(default_visibility = ["//src:__subpackages__", "//tests:__subpackages__"])
 
 cc_library(
     name = "gpt_config",
