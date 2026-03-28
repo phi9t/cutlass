@@ -1,0 +1,15 @@
+# Layer 1 — Tensor substrate.
+#
+# dtype, TensorView, layout/reshape utilities.
+# Header-only; no CUDA runtime dependency.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "tensor",
+    hdrs = [
+        "dtype.h",
+        "layout.h",
+        "tensor_view.h",
+    ],
+)

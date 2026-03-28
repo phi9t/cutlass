@@ -1,0 +1,13 @@
+# Third-party NCCL wrapper.
+
+package(default_visibility = ["//visibility:public"])
+
+alias(
+    name = "nccl_headers",
+    actual = "@local_nccl//:nccl_headers",
+)
+
+alias(
+    name = "nccl",
+    actual = "@local_nccl//:nccl",
+)
