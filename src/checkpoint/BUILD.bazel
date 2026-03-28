@@ -1,0 +1,13 @@
+# Layer 7 — Checkpointing.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "checkpoint",
+    hdrs = ["checkpoint.h"],
+    srcs = ["checkpoint.cc"],
+    deps = [
+        "//src/core",
+        "//third_party/cuda:cudart",
+    ],
+)

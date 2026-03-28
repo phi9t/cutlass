@@ -1,0 +1,52 @@
+# Layer 5 — Transformer block + GPT model.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "gpt_config",
+    hdrs = ["gpt_config.h"],
+)
+
+cc_library(
+    name = "gpt_params",
+    hdrs = ["gpt_params.h"],
+    deps = [
+        ":gpt_config",
+        "//src/attention",
+        "//src/ops:layernorm",
+        "//src/ops:linear",
+        "//src/tensor",
+    ],
+)
+
+cc_library(
+    name = "gpt_block",
+    hdrs = ["gpt_block.h"],
+    srcs = ["gpt_block.cc"],
+    deps = [
+        ":gpt_config",
+        ":gpt_params",
+        "//src/attention",
+        "//src/core",
+        "//src/ops:gelu",
+        "//src/ops:layernorm",
+        "//src/ops:linear",
+        "//src/tensor",
+    ],
+)
+
+cc_library(
+    name = "gpt_model",
+    hdrs = ["gpt_model.h"],
+    srcs = ["gpt_model.cc"],
+    deps = [
+        ":gpt_block",
+        ":gpt_config",
+        ":gpt_params",
+        "//src/core",
+        "//src/ops:embedding",
+        "//src/ops:layernorm",
+        "//src/ops:linear",
+        "//src/tensor",
+    ],
+)

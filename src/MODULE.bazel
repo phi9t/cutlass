@@ -1,0 +1,36 @@
+"""
+GPT CUDA Trainer - Bazel 8+ / bzlmod root module.
+
+Single-node, multi-GPU GPT trainer built on CUTLASS/CuTe.
+"""
+
+module(
+    name = "gpt_cuda_trainer",
+    version = "0.1.0",
+)
+
+# ---------------------------------------------------------------------------
+# Direct dependencies
+# ---------------------------------------------------------------------------
+
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
+bazel_dep(name = "googletest", version = "1.15.2")
+
+# CUTLASS: if a native Bazel module becomes available, switch to bazel_dep.
+# Until then, import via the local extension below or a vendored BUILD layer.
+# bazel_dep(name = "cutlass", version = "3.9.0")
+
+# ---------------------------------------------------------------------------
+# Module extensions — system-local CUDA / NCCL discovery
+# ---------------------------------------------------------------------------
+
+cuda = use_extension("//tools/bazel:cuda_ext.bzl", "cuda")
+cuda.local_cuda(
+    name = "local_cuda",
+    # Path auto-detected from CUDA_HOME or /usr/local/cuda by default.
+)
+cuda.local_nccl(
+    name = "local_nccl",
+    # Path auto-detected from NCCL_HOME or system default.
+)
+use_repo(cuda, "local_cuda", "local_nccl")

@@ -1,0 +1,23 @@
+# Layer 6 — Distributed: NCCL context and DDP.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "nccl_context",
+    hdrs = ["nccl_context.h"],
+    srcs = ["nccl_context.cc"],
+    deps = [
+        "//src/core",
+        "//third_party/nccl",
+    ],
+)
+
+cc_library(
+    name = "ddp",
+    hdrs = ["ddp.h"],
+    srcs = ["ddp.cc"],
+    deps = [
+        ":nccl_context",
+        "//src/core",
+    ],
+)
