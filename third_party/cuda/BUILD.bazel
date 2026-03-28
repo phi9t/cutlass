@@ -1,0 +1,27 @@
+# Third-party CUDA wrapper.
+#
+# This BUILD file re-exports targets from the local_cuda repository
+# discovered by //tools/bazel:cuda_ext.bzl, providing a stable label
+# for in-tree code to depend on.
+
+package(default_visibility = ["//visibility:public"])
+
+alias(
+    name = "cuda_headers",
+    actual = "@local_cuda//:cuda_headers",
+)
+
+alias(
+    name = "cudart",
+    actual = "@local_cuda//:cudart",
+)
+
+alias(
+    name = "cublas",
+    actual = "@local_cuda//:cublas",
+)
+
+alias(
+    name = "cublaslt",
+    actual = "@local_cuda//:cublaslt",
+)

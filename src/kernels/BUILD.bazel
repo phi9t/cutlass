@@ -1,0 +1,55 @@
+# Layer 2 — Primitive math kernels.
+#
+# GEMM, reductions, elementwise ops, layout transforms.
+# Each sub-family is a separate target to keep dependencies narrow.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "gemm",
+    hdrs = ["gemm.h"],
+    srcs = [
+        "gemm_cutlass.cu",
+        "gemm_cublaslt.cc",
+    ],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+        "//third_party/cuda:cublaslt",
+        "//third_party/cutlass",
+    ],
+)
+
+cc_library(
+    name = "reductions",
+    hdrs = ["reductions.h"],
+    srcs = ["reductions.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+)
+
+cc_library(
+    name = "elementwise",
+    hdrs = ["elementwise.h"],
+    srcs = ["elementwise.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+)
+
+cc_library(
+    name = "layout_kernels",
+    hdrs = ["layout_kernels.h"],
+    srcs = ["layout_kernels.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+)

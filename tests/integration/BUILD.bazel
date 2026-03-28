@@ -1,0 +1,93 @@
+# Tier C — Integration tests.
+#
+# Cross-layer tests that verify composed behavior.
+
+package(default_visibility = ["//visibility:private"])
+
+cc_test(
+    name = "kernel_gpu_test",
+    srcs = ["kernel_gpu_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        "//src/kernels:gemm",
+        "//src/kernels:reductions",
+        "//src/kernels:elementwise",
+        "//src/kernels:layout_kernels",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "attention_gpu_test",
+    srcs = ["attention_gpu_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        "//src/attention",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "gpt_overfit_test",
+    srcs = ["gpt_overfit_test.cc"],
+    size = "large",
+    timeout = "long",
+    deps = [
+        "//src/model:gpt_model",
+        "//src/train:optimizer",
+        "//src/ops:loss",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "gpt_checkpoint_roundtrip_test",
+    srcs = ["gpt_checkpoint_roundtrip_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        "//src/checkpoint",
+        "//src/model:gpt_model",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "ddp_2gpu_test",
+    srcs = ["ddp_2gpu_test.cc"],
+    size = "large",
+    timeout = "long",
+    deps = [
+        "//src/dist:ddp",
+        "//src/dist:nccl_context",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu", "multi_gpu"],
+)
+
+cc_test(
+    name = "resume_equivalence_test",
+    srcs = ["resume_equivalence_test.cc"],
+    size = "large",
+    timeout = "long",
+    deps = [
+        "//src/checkpoint",
+        "//src/train:trainer",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)

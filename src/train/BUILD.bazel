@@ -1,0 +1,39 @@
+# Layer 6 — Training runtime.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "optimizer",
+    hdrs = ["optimizer.h"],
+    srcs = ["optimizer.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+)
+
+cc_library(
+    name = "trainer",
+    hdrs = ["trainer.h"],
+    srcs = ["trainer.cc"],
+    deps = [
+        ":optimizer",
+        "//src/core",
+        "//src/dist:ddp",
+        "//src/dist:nccl_context",
+        "//src/model:gpt_model",
+        "//src/model:gpt_params",
+        "//src/ops:loss",
+        "//src/tensor",
+    ],
+)
+
+cc_binary(
+    name = "gpt_trainer",
+    srcs = ["main.cc"],
+    deps = [
+        ":trainer",
+        "//src/core",
+    ],
+)
