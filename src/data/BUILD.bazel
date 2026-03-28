@@ -1,0 +1,19 @@
+# Layer 7 — Data loading.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "data",
+    hdrs = [
+        "batcher.h",
+        "token_dataset.h",
+    ],
+    srcs = [
+        "batcher.cc",
+        "token_dataset.cc",
+    ],
+    deps = [
+        "//src/core",
+        "//third_party/cuda:cudart",
+    ],
+)

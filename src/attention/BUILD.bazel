@@ -1,0 +1,22 @@
+# Layer 4 — Attention subsystem.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "attention",
+    hdrs = ["attention.h"],
+    srcs = [
+        "attention.cc",
+        "attention_forward.cu",
+        "attention_backward.cu",
+    ],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//src/kernels:gemm",
+        "//src/kernels:layout_kernels",
+        "//src/ops:linear",
+        "//src/ops:softmax",
+        "//third_party/cuda:cudart",
+    ],
+)

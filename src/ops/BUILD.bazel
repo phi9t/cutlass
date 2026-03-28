@@ -1,0 +1,75 @@
+# Layer 3 — Composite neural ops.
+#
+# Each op is a separate target:
+#   linear, embedding, layernorm, gelu, softmax, loss.
+
+package(default_visibility = ["//src:__subpackages__"])
+
+cc_library(
+    name = "linear",
+    hdrs = ["linear.h"],
+    srcs = ["linear.cc"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//src/kernels:gemm",
+        "//src/kernels:reductions",
+    ],
+)
+
+cc_library(
+    name = "embedding",
+    hdrs = ["embedding.h"],
+    srcs = ["embedding.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//src/kernels:elementwise",
+        "//third_party/cuda:cudart",
+    ],
+)
+
+cc_library(
+    name = "layernorm",
+    hdrs = ["layernorm.h"],
+    srcs = ["layernorm.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//src/kernels:reductions",
+        "//third_party/cuda:cudart",
+    ],
+)
+
+cc_library(
+    name = "gelu",
+    hdrs = ["gelu.h"],
+    srcs = ["gelu.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+)
+
+cc_library(
+    name = "softmax",
+    hdrs = ["softmax.h"],
+    srcs = ["softmax.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+)
+
+cc_library(
+    name = "loss",
+    hdrs = ["loss.h"],
+    srcs = ["loss.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+)

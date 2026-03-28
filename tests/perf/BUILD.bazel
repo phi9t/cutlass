@@ -1,0 +1,33 @@
+# Tier D — Performance / regression tests.
+#
+# Non-blocking by default.  Run manually or in nightly CI.
+
+package(default_visibility = ["//visibility:private"])
+
+cc_test(
+    name = "gemm_perf",
+    srcs = ["gemm_perf.cc"],
+    size = "large",
+    timeout = "long",
+    deps = [
+        "//src/kernels:gemm",
+        "//src/core",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu", "perf", "manual"],
+)
+
+cc_test(
+    name = "attention_perf",
+    srcs = ["attention_perf.cc"],
+    size = "large",
+    timeout = "long",
+    deps = [
+        "//src/attention",
+        "//src/core",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu", "perf", "manual"],
+)
