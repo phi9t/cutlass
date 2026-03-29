@@ -30,14 +30,11 @@ def _find_nccl_path(ctx):
 def _local_cuda_impl(rctx):
     cuda_path = _find_cuda_path(rctx)
     rctx.file("BUILD.bazel", content = """
-load("@rules_cc//cc:cc_import.bzl", "cc_import")
-load("@rules_cc//cc:cc_library.bzl", "cc_library")
-
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
     name = "cuda_headers",
-    hdrs = glob(["include/**/*.h", "include/**/*.hpp"]),
+    hdrs = glob(["include/**/*.h", "include/**/*.hpp"], allow_empty = True),
     includes = ["include"],
 )
 
@@ -59,9 +56,13 @@ cc_import(
     deps = [":cuda_headers"],
 )
 """)
-    # Symlink the CUDA toolkit contents into the repo.
+    # Symlink the CUDA toolkit contents into the repo if they exist.
     for subdir in ["include", "lib64"]:
-        rctx.symlink(cuda_path + "/" + subdir, subdir)
+        path = cuda_path + "/" + subdir
+        if rctx.path(path).exists:
+            rctx.symlink(path, subdir)
+        else:
+            rctx.file(subdir + "/.gitkeep", content = "")
 
 local_cuda = repository_rule(
     implementation = _local_cuda_impl,
@@ -72,14 +73,11 @@ local_cuda = repository_rule(
 def _local_nccl_impl(rctx):
     nccl_path = _find_nccl_path(rctx)
     rctx.file("BUILD.bazel", content = """
-load("@rules_cc//cc:cc_import.bzl", "cc_import")
-load("@rules_cc//cc:cc_library.bzl", "cc_library")
-
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
     name = "nccl_headers",
-    hdrs = glob(["include/**/*.h"]),
+    hdrs = glob(["include/**/*.h"], allow_empty = True),
     includes = ["include"],
 )
 
@@ -90,7 +88,11 @@ cc_import(
 )
 """)
     for subdir in ["include", "lib"]:
-        rctx.symlink(nccl_path + "/" + subdir, subdir)
+        path = nccl_path + "/" + subdir
+        if rctx.path(path).exists:
+            rctx.symlink(path, subdir)
+        else:
+            rctx.file(subdir + "/.gitkeep", content = "")
 
 local_nccl = repository_rule(
     implementation = _local_nccl_impl,

@@ -57,3 +57,4 @@ build:profile --copt=-DPROFILE_BUILD
 # ---------------------------------------------------------------------------
 test --test_output=errors
 test --test_verbose_timeout_warnings
+common --incompatible_autoload_externally=

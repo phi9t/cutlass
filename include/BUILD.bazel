@@ -1,0 +1,21 @@
+# In-tree CUTLASS / CuTe header-only library.
+#
+# Exposes the vendored CUTLASS 3.x and CuTe headers to the rest of the
+# build tree. All CUTLASS includes use the canonical form:
+#   #include "cutlass/foo.h"
+#   #include "cute/bar.hpp"
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "cutlass_headers",
+    hdrs = glob([
+        "cutlass/**/*.h",
+        "cutlass/**/*.hpp",
+        "cute/**/*.hpp",
+    ]),
+    includes = ["."],
+    deps = [
+        "//third_party/cuda:cuda_headers",
+    ],
+)

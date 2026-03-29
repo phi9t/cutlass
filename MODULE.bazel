@@ -1,0 +1,104 @@
+"""
+GPT CUDA Trainer - Bazel 8+ / bzlmod root module.
+
+Single-node, multi-GPU GPT trainer built on CUTLASS/CuTe.
+"""
+
+module(
+    name = "gpt_cuda_trainer",
+    version = "0.1.0",
+)
+
+# ---------------------------------------------------------------------------
+# Direct dependencies
+# ---------------------------------------------------------------------------
+
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
+bazel_dep(name = "googletest", version = "1.15.2")
+bazel_dep(name = "platforms", version = "0.0.10")
+
+# CUTLASS is vendored in-tree under //include/cutlass and //include/cute.
+# If a native Bazel module becomes available, switch to bazel_dep.
+
+# ---------------------------------------------------------------------------
+# Local overrides — resolve all modules from locally cached tarballs.
+#
+# To use BCR (Bazel Central Registry) instead, remove all
+# local_path_override() blocks below and delete .bazel_deps/.
+# The bootstrap script (tools/bazel/fetch_deps.sh) can regenerate
+# .bazel_deps/ for offline environments.
+# ---------------------------------------------------------------------------
+
+local_path_override(
+    module_name = "bazel_skylib",
+    path = ".bazel_deps/extracted/bazel_skylib",
+)
+
+local_path_override(
+    module_name = "googletest",
+    path = ".bazel_deps/extracted/googletest-1.15.2",
+)
+
+local_path_override(
+    module_name = "platforms",
+    path = ".bazel_deps/extracted/platforms",
+)
+
+local_path_override(
+    module_name = "abseil-cpp",
+    path = ".bazel_deps/extracted/abseil-cpp-20240116.2",
+)
+
+local_path_override(
+    module_name = "re2",
+    path = ".bazel_deps/extracted/re2-2024-07-02",
+)
+
+local_path_override(
+    module_name = "apple_support",
+    path = ".bazel_deps/extracted/apple_support",
+)
+
+local_path_override(
+    module_name = "rules_cc",
+    path = ".bazel_deps/extracted/rules_cc-0.1.1",
+)
+
+local_path_override(
+    module_name = "rules_license",
+    path = ".bazel_deps/extracted/rules_license",
+)
+
+local_path_override(
+    module_name = "bazel_features",
+    path = ".bazel_deps/extracted/bazel_features",
+)
+
+local_path_override(
+    module_name = "rules_shell",
+    path = ".bazel_deps/extracted/rules_shell",
+)
+
+# Transitive dep stubs (not used at build time, but required by module graph).
+local_path_override(module_name = "pybind11_bazel", path = ".bazel_deps/extracted/pybind11_bazel")
+local_path_override(module_name = "rules_python", path = ".bazel_deps/extracted/rules_python")
+local_path_override(module_name = "buildozer", path = ".bazel_deps/extracted/buildozer")
+local_path_override(module_name = "zlib", path = ".bazel_deps/extracted/zlib")
+local_path_override(module_name = "rules_proto", path = ".bazel_deps/extracted/rules_proto")
+local_path_override(module_name = "protobuf", path = ".bazel_deps/extracted/protobuf")
+local_path_override(module_name = "rules_java", path = ".bazel_deps/extracted/rules_java")
+
+# ---------------------------------------------------------------------------
+# Module extensions — system-local CUDA / NCCL discovery
+# ---------------------------------------------------------------------------
+
+cuda = use_extension("//tools/bazel:cuda_ext.bzl", "cuda")
+cuda.local_cuda(
+    name = "local_cuda",
+    # Path auto-detected from CUDA_HOME or /usr/local/cuda by default.
+)
+cuda.local_nccl(
+    name = "local_nccl",
+    # Path auto-detected from NCCL_HOME or system default.
+)
+use_repo(cuda, "local_cuda", "local_nccl")
