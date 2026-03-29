@@ -21,3 +21,17 @@ cc_library(
         "//third_party/cuda:cudart",
     ],
 )
+
+# ---- Tests ----
+
+cc_test(
+    name = "core_test",
+    srcs = ["core_test.cc"],
+    size = "small",
+    timeout = "short",
+    deps = [
+        ":core",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+)

@@ -3,7 +3,10 @@
 # Each op is a separate target:
 #   linear, embedding, layernorm, gelu, softmax, loss.
 
-package(default_visibility = ["//src:__subpackages__", "//tests:__subpackages__"])
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
 
 cc_library(
     name = "linear",
@@ -72,4 +75,90 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+)
+
+# ---- Tests ----
+
+cc_test(
+    name = "embedding_test",
+    srcs = ["embedding_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":embedding",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "layernorm_test",
+    srcs = ["layernorm_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":layernorm",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "softmax_test",
+    srcs = ["softmax_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":softmax",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "loss_test",
+    srcs = ["loss_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":loss",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "gelu_test",
+    srcs = ["gelu_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":gelu",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "linear_test",
+    srcs = ["linear_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":linear",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
 )

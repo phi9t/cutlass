@@ -1,6 +1,9 @@
 # Layer 5 — Transformer block + GPT model.
 
-package(default_visibility = ["//src:__subpackages__", "//tests:__subpackages__"])
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
 
 cc_library(
     name = "gpt_config",
@@ -49,4 +52,34 @@ cc_library(
         "//src/ops:linear",
         "//src/tensor",
     ],
+)
+
+# ---- Tests ----
+
+cc_test(
+    name = "gpt_model_test",
+    srcs = ["gpt_model_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":gpt_model",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "gpt_block_test",
+    srcs = ["gpt_block_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":gpt_block",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
 )

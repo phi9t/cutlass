@@ -53,3 +53,47 @@ cc_library(
         "//third_party/cuda:cudart",
     ],
 )
+
+# ---- Tests ----
+
+cc_test(
+    name = "gemm_test",
+    srcs = ["gemm_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":gemm",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "reduction_test",
+    srcs = ["reduction_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":reductions",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "elementwise_test",
+    srcs = ["elementwise_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":elementwise",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)

@@ -11,3 +11,18 @@ cc_library(
         "//third_party/cuda:cudart",
     ],
 )
+
+# ---- Tests ----
+
+cc_test(
+    name = "checkpoint_test",
+    srcs = ["checkpoint_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":checkpoint",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
