@@ -1,6 +1,12 @@
 # Test infrastructure root.
+#
+# Shared test_main and test_utils are available to both
+# collocated tests in src/ and cross-cutting tests in tests/.
 
-package(default_visibility = ["//tests:__subpackages__"])
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
 
 cc_library(
     name = "test_main",

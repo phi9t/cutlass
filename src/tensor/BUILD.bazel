@@ -13,3 +13,29 @@ cc_library(
         "tensor_view.h",
     ],
 )
+
+# ---- Tests ----
+
+cc_test(
+    name = "tensor_test",
+    srcs = ["tensor_test.cc"],
+    size = "small",
+    timeout = "short",
+    deps = [
+        ":tensor",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "layout_test",
+    srcs = ["layout_test.cc"],
+    size = "small",
+    timeout = "short",
+    deps = [
+        ":tensor",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+)
