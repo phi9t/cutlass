@@ -37,3 +37,18 @@ cc_binary(
         "//src/core",
     ],
 )
+
+# ---- Tests ----
+
+cc_test(
+    name = "optimizer_test",
+    srcs = ["optimizer_test.cc"],
+    size = "small",
+    timeout = "short",
+    deps = [
+        ":optimizer",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)

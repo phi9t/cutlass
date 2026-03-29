@@ -1,6 +1,9 @@
 # Layer 4 — Attention subsystem.
 
-package(default_visibility = ["//src:__subpackages__"])
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
 
 cc_library(
     name = "attention",
@@ -19,4 +22,34 @@ cc_library(
         "//src/ops:softmax",
         "//third_party/cuda:cudart",
     ],
+)
+
+# ---- Tests ----
+
+cc_test(
+    name = "attention_forward_test",
+    srcs = ["attention_forward_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":attention",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
+
+cc_test(
+    name = "attention_backward_test",
+    srcs = ["attention_backward_test.cc"],
+    size = "medium",
+    timeout = "moderate",
+    deps = [
+        ":attention",
+        "//tests:test_main",
+        "//tests:test_utils",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
 )
