@@ -4,3 +4,5 @@ cutlass_library.egg-info/
 /build*
 .bazel_deps/
 .bazelrc.user
+MODULE.bazel.lock
+bazel-*
