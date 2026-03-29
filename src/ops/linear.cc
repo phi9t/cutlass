@@ -76,7 +76,17 @@ Status linear_backward(Tensor2D<const float> X,
       kernels::gemm_f32(dY_T, X_mut, grads.d_weight, 1.0f, 0.0f, stream));
 
   // db = col_sum(dY) = row_sum(dY^T)
-  // TODO: Implement column-wise reduction or transpose + row_sum for db.
+  if (params.use_bias && params.bias.data != nullptr) {
+    // dY is [N, D_out]. We need sum over the N dimension for each D_out column.
+    // Transpose view: [D_out, N] with swapped strides, then row_sum → [D_out].
+    Tensor2D<const float> dY_T_view;
+    dY_T_view.data = dY.data;
+    dY_T_view.shape = {D_out, N};
+    dY_T_view.stride = {1, D_out};  // transposed strides
+
+    GPT_RETURN_IF_ERROR(
+        kernels::row_sum_f32(dY_T_view, grads.d_bias, stream));
+  }
 
   return Status::Ok();
 }
