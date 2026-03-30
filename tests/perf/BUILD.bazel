@@ -27,6 +27,7 @@ cc_test(
         "//src/attention",
         "//src/core",
         "//tests:test_main",
+        "//tests:test_utils",
         "@googletest//:gtest",
     ],
     tags = ["gpu", "perf", "manual"],

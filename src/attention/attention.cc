@@ -5,6 +5,7 @@
 // forward/backward pass.
 
 #include "src/attention/attention.h"
+#include "src/attention/attention_forward.h"
 
 #include "src/kernels/elementwise.h"
 #include "src/kernels/gemm.h"
@@ -53,47 +54,16 @@ Status attention_forward(Tensor3D<const float> X,
   }
 
   // Step 2: Split Q, K, V and reshape to head layout [B, H, T, Dh].
-  // state.qkv is [B, T, 3*D].  Split into three [B, T, D] and repack.
+  // Fused kernel reads packed [B, T, 3*D] and writes Q, K, V as [B, H, T, Dh].
   {
-    // Q chunk: offset 0
-    Tensor3D<const float> q_src;
-    q_src.data = state.qkv.data;
-    q_src.shape = {B, T, D};
-    q_src.stride = {T * 3 * D, 3 * D, 1};  // strided view into packed QKV
-
-    // For v1, we do a physical copy via split_heads to get contiguous [B,H,T,Dh].
-    // The stride trick above gives us Q data at offsets 0, D, 2D within each row.
-    // split_heads expects contiguous [B, T, D], so we need a contiguous copy first.
-    // TODO: Fuse the split+reorder into a single kernel.
-
-    // For now, assume QKV was laid out as [B, T, 3, H, Dh] = [B, T, 3*D]
-    // with Q at [:, :, 0:D], K at [:, :, D:2D], V at [:, :, 2D:3D].
-    // split_heads_f32 handles [B, T, D] → [B, H, T, Dh].
-
-    // Q
-    Tensor3D<const float> Q_flat;
-    Q_flat.data = state.qkv.data;  // offset 0
-    Q_flat.shape = {B, T, D};
-    Q_flat.stride = {T * 3 * D, 3 * D, 1};
-    // TODO: need contiguous copy here since split_heads assumes contiguous input.
-    // For the v1 reference stub, we record the intent.
+    Tensor3D<const float> qkv_view;
+    qkv_view.data = state.qkv.data;
+    qkv_view.shape = {B, T, 3 * D};
+    qkv_view.stride = {T * 3 * D, 3 * D, 1};
 
     GPT_RETURN_IF_ERROR(
-        kernels::split_heads_f32(Q_flat, state.Q, H, stream));
-
-    Tensor3D<const float> K_flat;
-    K_flat.data = state.qkv.data + D;
-    K_flat.shape = {B, T, D};
-    K_flat.stride = {T * 3 * D, 3 * D, 1};
-    GPT_RETURN_IF_ERROR(
-        kernels::split_heads_f32(K_flat, state.K, H, stream));
-
-    Tensor3D<const float> V_flat;
-    V_flat.data = state.qkv.data + 2 * D;
-    V_flat.shape = {B, T, D};
-    V_flat.stride = {T * 3 * D, 3 * D, 1};
-    GPT_RETURN_IF_ERROR(
-        kernels::split_heads_f32(V_flat, state.V, H, stream));
+        kernels::split_qkv_heads_f32(qkv_view, state.Q, state.K, state.V,
+                                     H, stream));
   }
 
   // Step 3-4: Scores = Q @ K^T * scale.
@@ -118,7 +88,13 @@ Status attention_forward(Tensor3D<const float> X,
         Q_3d, K_3d, S_3d, config.scale(), 0.0f, stream));
   }
 
-  // Step 5-6: Causal mask + softmax.
+  // Step 5: Apply causal mask (if enabled).
+  if (config.causal) {
+    GPT_RETURN_IF_ERROR(
+        apply_causal_mask_f32(state.scores.data, B, H, T, stream));
+  }
+
+  // Step 6: Softmax over scores → probabilities.
   // Flatten scores to [B*H*T, T] for row-wise softmax.
   {
     Tensor2D<const float> S_2d;
@@ -126,9 +102,6 @@ Status attention_forward(Tensor3D<const float> X,
     S_2d.shape = {B * H * T, T};
     S_2d.stride = {T, 1};
 
-    // Causal mask: for each row i (query position), mask positions j > i%T.
-    // TODO: Build causal mask tensor or use an implicit mask kernel.
-    // For v1, pass null mask (no masking) — caller must provide mask separately.
     Tensor2D<const int8_t> null_mask;
     null_mask.data = nullptr;
     null_mask.shape = {B * H * T, T};
