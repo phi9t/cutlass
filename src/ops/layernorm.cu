@@ -34,7 +34,7 @@ __global__ void layernorm_forward_kernel(
 }
 
 // Backward kernel: compute dx, accumulate dgamma/dbeta.
-// This is the v1 reference path — not optimized for large D.
+// Uses warp-level and block-level reductions for parallel summation.
 __global__ void layernorm_backward_kernel(
     const float* __restrict__ dy,
     const float* __restrict__ x,
@@ -45,13 +45,17 @@ __global__ void layernorm_backward_kernel(
     float* __restrict__ dgamma,
     float* __restrict__ dbeta,
     int64_t rows, int64_t D) {
+  // Shared memory for cross-warp reduction (max 8 warps per block = 256 threads).
+  __shared__ float s_dy_xhat[8];
+  __shared__ float s_dy_gamma[8];
+
   int64_t row = blockIdx.x;
   if (row >= rows) return;
 
   float m = mean[row];
   float s = inv_std[row];
 
-  // Pass 1: compute dot(dy, x_hat) and dot(dy, gamma) for this row.
+  // Pass 1: compute partial sums of dot(dy*gamma, x_hat) and sum(dy*gamma).
   float sum_dy_xhat = 0.0f;
   float sum_dy = 0.0f;
   for (int64_t d = threadIdx.x; d < D; d += blockDim.x) {
@@ -61,8 +65,42 @@ __global__ void layernorm_backward_kernel(
     sum_dy += dy_val * gamma[d];
   }
 
-  // Warp reduction (simplified — full implementation would use shared mem).
-  // For v1 reference with blockDim.x=1 this is trivially correct.
+  // Warp-level reduction using shuffle.
+  unsigned mask = 0xFFFFFFFFu;
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    sum_dy_xhat += __shfl_down_sync(mask, sum_dy_xhat, offset);
+    sum_dy += __shfl_down_sync(mask, sum_dy, offset);
+  }
+
+  // Block-level reduction via shared memory (for blocks with multiple warps).
+  int warp_id = threadIdx.x / 32;
+  int lane_id = threadIdx.x % 32;
+  int num_warps = (blockDim.x + 31) / 32;
+
+  if (lane_id == 0) {
+    s_dy_xhat[warp_id] = sum_dy_xhat;
+    s_dy_gamma[warp_id] = sum_dy;
+  }
+  __syncthreads();
+
+  // First warp reduces across warps.
+  if (warp_id == 0) {
+    sum_dy_xhat = (lane_id < num_warps) ? s_dy_xhat[lane_id] : 0.0f;
+    sum_dy = (lane_id < num_warps) ? s_dy_gamma[lane_id] : 0.0f;
+    for (int offset = 16; offset > 0; offset >>= 1) {
+      sum_dy_xhat += __shfl_down_sync(mask, sum_dy_xhat, offset);
+      sum_dy += __shfl_down_sync(mask, sum_dy, offset);
+    }
+    // Broadcast final result back to shared memory.
+    if (lane_id == 0) {
+      s_dy_xhat[0] = sum_dy_xhat;
+      s_dy_gamma[0] = sum_dy;
+    }
+  }
+  __syncthreads();
+
+  sum_dy_xhat = s_dy_xhat[0];
+  sum_dy = s_dy_gamma[0];
 
   // Pass 2: compute dx.
   float inv_D = 1.0f / static_cast<float>(D);
@@ -74,7 +112,7 @@ __global__ void layernorm_backward_kernel(
                            - inv_D * x_hat * sum_dy_xhat);
   }
 
-  // Accumulate dgamma, dbeta (atomics — slow but correct for v1).
+  // Accumulate dgamma, dbeta (atomics across rows).
   for (int64_t d = threadIdx.x; d < D; d += blockDim.x) {
     float x_hat = (x[row * D + d] - m) * s;
     float dy_val = dy[row * D + d];
@@ -121,9 +159,8 @@ Status layernorm_backward(Tensor2D<const float> dy,
   int64_t rows = x.shape[0];
   int64_t D = x.shape[1];
 
-  // v1: one block per row, single thread for correctness.
-  // TODO(perf): warp-level or block-level reduction for large D.
-  layernorm_backward_kernel<<<static_cast<int>(rows), 1, 0, stream.get()>>>(
+  int bwd_block = std::min(static_cast<int>(D), 256);
+  layernorm_backward_kernel<<<static_cast<int>(rows), bwd_block, 0, stream.get()>>>(
       dy.data, x.data, params.gamma.data,
       state.mean.data, state.inv_std.data,
       dx.data, dgamma.data, dbeta.data, rows, D);

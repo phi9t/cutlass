@@ -1,8 +1,10 @@
 // Layer 4 — Attention subsystem: CUDA kernels specific to attention.
 //
-// Currently contains utility kernels that are attention-specific
-// (e.g., causal mask generation, fused scale+mask).
+// Contains utility kernels that are attention-specific
+// (e.g., causal mask generation, in-place causal mask application).
 // The main forward orchestration lives in attention.cc.
+
+#include "src/attention/attention_forward.h"
 
 #include <cuda_runtime.h>
 #include <cstdint>
@@ -12,44 +14,37 @@ namespace attention {
 
 namespace {
 
-// Generate a causal mask for sequence length T.
-// mask[i, j] = 1 (masked) if j > i, else 0.
-// Output: [T, T] int8 mask.
-__global__ void generate_causal_mask_kernel(int8_t* __restrict__ mask,
-                                            int64_t T) {
-  int64_t i = blockIdx.y * blockDim.y + threadIdx.y;
-  int64_t j = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < T && j < T) {
-    mask[i * T + j] = (j > i) ? 1 : 0;
-  }
-}
-
-// Fused scale + causal mask fill:
-//   scores[b, h, i, j] *= scale
-//   scores[b, h, i, j] = -inf  if j > i
-__global__ void scale_and_causal_mask_kernel(
-    float* __restrict__ scores,
-    float scale,
-    int64_t BH,   // B * H
-    int64_t T) {
+// Apply causal mask in-place: set scores[bh, i, j] = -1e9 where j > i.
+// Scores layout: [BH, T, T] row-major (BH = B * H).
+__global__ void apply_causal_mask_kernel(float* __restrict__ scores,
+                                         int64_t BH,
+                                         int64_t T) {
   int64_t bh = blockIdx.z;
   int64_t i = blockIdx.y * blockDim.y + threadIdx.y;
   int64_t j = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (bh < BH && i < T && j < T) {
-    int64_t idx = bh * T * T + i * T + j;
     if (j > i) {
-      scores[idx] = -1e9f;  // effectively -inf for softmax
-    } else {
-      scores[idx] *= scale;
+      scores[bh * T * T + i * T + j] = -1e9f;
     }
   }
 }
 
 }  // namespace
 
-// TODO: Expose these kernels through a clean internal API and wire
-// them into attention.cc once the causal mask path is enabled.
+Status apply_causal_mask_f32(float* scores,
+                             int64_t B, int64_t H, int64_t T,
+                             const CudaStream& stream) {
+  int64_t BH = B * H;
+  constexpr int kTile = 16;
+  dim3 block(kTile, kTile);
+  dim3 grid(static_cast<unsigned>((T + kTile - 1) / kTile),
+            static_cast<unsigned>((T + kTile - 1) / kTile),
+            static_cast<unsigned>(BH));
+  apply_causal_mask_kernel<<<grid, block, 0, stream.get()>>>(
+      scores, BH, T);
+  return Status::Ok();
+}
 
 }  // namespace attention
 }  // namespace gpt

@@ -76,6 +76,47 @@ __global__ void merge_heads_kernel(const float* __restrict__ input,
   output[idx] = input[in_idx];
 }
 
+// Fused QKV split: read from packed [B, T, 3*D] and write Q/K/V as [B, H, T, Dh].
+// Each thread handles one element across all three outputs.
+__global__ void split_qkv_heads_kernel(const float* __restrict__ qkv,
+                                       float* __restrict__ Q,
+                                       float* __restrict__ K,
+                                       float* __restrict__ V,
+                                       int64_t B, int64_t T, int64_t H,
+                                       int64_t Dh) {
+  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t total = B * H * T * Dh;
+  if (idx >= total) return;
+
+  // Decompose output index [B, H, T, Dh] row-major.
+  int64_t d = idx % Dh;
+  int64_t t = (idx / Dh) % T;
+  int64_t h = (idx / (Dh * T)) % H;
+  int64_t b = idx / (Dh * T * H);
+
+  int64_t D = H * Dh;
+  // QKV is packed as [B, T, 3*D] with Q at col 0..D-1, K at D..2D-1, V at 2D..3D-1.
+  int64_t base = b * (T * 3 * D) + t * (3 * D) + h * Dh + d;
+  Q[idx] = qkv[base];
+  K[idx] = qkv[base + D];
+  V[idx] = qkv[base + 2 * D];
+}
+
+// Generic strided 2D copy: handles arbitrary row strides for src and dst.
+__global__ void strided_copy_2d_kernel(const float* __restrict__ src,
+                                       float* __restrict__ dst,
+                                       int64_t rows, int64_t cols,
+                                       int64_t src_row_stride,
+                                       int64_t dst_row_stride) {
+  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t total = rows * cols;
+  if (idx >= total) return;
+
+  int64_t col = idx % cols;
+  int64_t row = idx / cols;
+  dst[row * dst_row_stride + col] = src[row * src_row_stride + col];
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -116,9 +157,16 @@ Status repack_contiguous_f32(Tensor2D<const float> input,
     }
     return Status::Ok();
   }
-  // TODO: Implement strided copy kernel for non-contiguous inputs.
-  return Status(StatusCode::kNotImplemented,
-                "Strided repack not yet implemented");
+  // Strided copy for non-contiguous inputs/outputs.
+  int64_t rows = input.shape[0];
+  int64_t cols = input.shape[1];
+  int64_t total = rows * cols;
+  int block = 256;
+  int grid = static_cast<int>((total + block - 1) / block);
+  strided_copy_2d_kernel<<<grid, block, 0, stream.get()>>>(
+      input.data, output.data, rows, cols,
+      input.stride[0], output.stride[0]);
+  return Status::Ok();
 }
 
 Status split_heads_f32(Tensor3D<const float> input,
@@ -154,6 +202,33 @@ Status merge_heads_f32(Tensor4D<const float> input,
   int grid = static_cast<int>((total + block - 1) / block);
   merge_heads_kernel<<<grid, block, 0, stream.get()>>>(
       input.data, output.data, B, H, T, Dh);
+  return Status::Ok();
+}
+
+Status split_qkv_heads_f32(Tensor3D<const float> qkv,
+                           Tensor4D<float> Q,
+                           Tensor4D<float> K,
+                           Tensor4D<float> V,
+                           int64_t n_heads,
+                           const CudaStream& stream) {
+  int64_t B = qkv.shape[0];
+  int64_t T = qkv.shape[1];
+  int64_t three_D = qkv.shape[2];
+  if (three_D % 3 != 0) {
+    return Status(StatusCode::kInvalidArgument,
+                  "split_qkv_heads: last dim must be 3*D");
+  }
+  int64_t D = three_D / 3;
+  int64_t Dh = D / n_heads;
+  if (D % n_heads != 0) {
+    return Status(StatusCode::kInvalidArgument,
+                  "D not divisible by n_heads in split_qkv_heads");
+  }
+  int64_t total = B * n_heads * T * Dh;
+  int block = 256;
+  int grid = static_cast<int>((total + block - 1) / block);
+  split_qkv_heads_kernel<<<grid, block, 0, stream.get()>>>(
+      qkv.data, Q.data, K.data, V.data, B, T, n_heads, Dh);
   return Status::Ok();
 }
 

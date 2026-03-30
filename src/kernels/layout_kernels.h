@@ -51,5 +51,18 @@ Status merge_heads_f32(Tensor4D<const float> input,  // [B, H, T, Dh]
                        Tensor3D<float> output,        // [B, T, D]
                        const CudaStream& stream);
 
+// ---------------------------------------------------------------------------
+// Fused QKV split + head reshape:
+//   Reads packed [B, T, 3*D] buffer and writes three [B, H, T, Dh] outputs
+//   for Q, K, V in a single kernel launch.  D = H * Dh.
+// ---------------------------------------------------------------------------
+
+Status split_qkv_heads_f32(Tensor3D<const float> qkv,  // [B, T, 3*D]
+                           Tensor4D<float> Q,           // [B, H, T, Dh]
+                           Tensor4D<float> K,           // [B, H, T, Dh]
+                           Tensor4D<float> V,           // [B, H, T, Dh]
+                           int64_t n_heads,
+                           const CudaStream& stream);
+
 }  // namespace kernels
 }  // namespace gpt
