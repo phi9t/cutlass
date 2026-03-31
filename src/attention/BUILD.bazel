@@ -19,7 +19,6 @@ cc_library(
     deps = [
         "//src/core",
         "//src/tensor",
-        "//src/kernels:elementwise",
         "//src/kernels:gemm",
         "//src/kernels:layout_kernels",
         "//src/ops:linear",

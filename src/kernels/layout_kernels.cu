@@ -2,6 +2,8 @@
 
 #include "src/kernels/layout_kernels.h"
 
+#include <algorithm>
+#include <climits>
 #include <cuda_runtime.h>
 
 namespace gpt {
@@ -117,6 +119,12 @@ __global__ void strided_copy_2d_kernel(const float* __restrict__ src,
   dst[row * dst_row_stride + col] = src[row * src_row_stride + col];
 }
 
+// Compute 1D grid size, clamping to CUDA's max grid.x limit.
+inline int grid_1d(int64_t total, int block_size) {
+  int64_t g = (total + block_size - 1) / block_size;
+  return static_cast<int>(std::min(g, static_cast<int64_t>(INT_MAX)));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -162,7 +170,7 @@ Status repack_contiguous_f32(Tensor2D<const float> input,
   int64_t cols = input.shape[1];
   int64_t total = rows * cols;
   int block = 256;
-  int grid = static_cast<int>((total + block - 1) / block);
+  int grid = grid_1d(total, block);
   strided_copy_2d_kernel<<<grid, block, 0, stream.get()>>>(
       input.data, output.data, rows, cols,
       input.stride[0], output.stride[0]);
@@ -183,7 +191,7 @@ Status split_heads_f32(Tensor3D<const float> input,
   }
   int64_t total = B * n_heads * T * Dh;
   int block = 256;
-  int grid = static_cast<int>((total + block - 1) / block);
+  int grid = grid_1d(total, block);
   split_heads_kernel<<<grid, block, 0, stream.get()>>>(
       input.data, output.data, B, T, n_heads, Dh);
   return Status::Ok();
@@ -199,7 +207,7 @@ Status merge_heads_f32(Tensor4D<const float> input,
   int64_t D = H * Dh;
   int64_t total = B * T * D;
   int block = 256;
-  int grid = static_cast<int>((total + block - 1) / block);
+  int grid = grid_1d(total, block);
   merge_heads_kernel<<<grid, block, 0, stream.get()>>>(
       input.data, output.data, B, H, T, Dh);
   return Status::Ok();
@@ -226,7 +234,7 @@ Status split_qkv_heads_f32(Tensor3D<const float> qkv,
   }
   int64_t total = B * n_heads * T * Dh;
   int block = 256;
-  int grid = static_cast<int>((total + block - 1) / block);
+  int grid = grid_1d(total, block);
   split_qkv_heads_kernel<<<grid, block, 0, stream.get()>>>(
       qkv.data, Q.data, K.data, V.data, B, T, n_heads, Dh);
   return Status::Ok();

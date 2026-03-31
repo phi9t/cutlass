@@ -7,11 +7,12 @@
 #include "src/attention/attention.h"
 #include "src/attention/attention_forward.h"
 
-#include "src/kernels/elementwise.h"
 #include "src/kernels/gemm.h"
 #include "src/kernels/layout_kernels.h"
 #include "src/ops/linear.h"
 #include "src/ops/softmax.h"
+
+#include <cuda_runtime.h>
 
 namespace gpt {
 namespace attention {
@@ -369,10 +370,12 @@ Status attention_backward(Tensor3D<const float> dO,
         dS_T, Q_3d, dK_3d, config.scale(), 0.0f, stream));
 
     // Copy dQ from temp to state.Q.
-    int64_t n = B * H * T * Dh;
-    Tensor1D<const float> src{dQ_temp.data, {n}, {1}};
-    Tensor1D<float> dst{state.Q.data, {n}, {1}};
-    GPT_RETURN_IF_ERROR(kernels::vec_scale_f32(src, 1.0f, dst, stream));
+    size_t dq_bytes = static_cast<size_t>(B * H * T * Dh) * sizeof(float);
+    cudaError_t err = cudaMemcpyAsync(state.Q.data, dQ_temp.data, dq_bytes,
+                                       cudaMemcpyDeviceToDevice, stream.get());
+    if (err != cudaSuccess) {
+      return Status(StatusCode::kCudaError, cudaGetErrorString(err));
+    }
   }
 
   // -----------------------------------------------------------------------
