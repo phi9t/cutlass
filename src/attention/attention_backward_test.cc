@@ -1,7 +1,7 @@
 // Tier B — GPU unit tests for attention backward.
 //
 // Tests cover:
-//   - Backward returns kNotImplemented (current state)
+//   - Compile/link sanity check for backward function
 //   - CPU reference: finite-difference gradient check for attention
 //     (verifies the CPU oracle is self-consistent)
 

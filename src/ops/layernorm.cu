@@ -35,6 +35,7 @@ __global__ void layernorm_forward_kernel(
 
 // Backward kernel: compute dx, accumulate dgamma/dbeta.
 // Uses warp-level and block-level reductions for parallel summation.
+// blockDim.x must be <= 256 (max 8 warps).
 __global__ void layernorm_backward_kernel(
     const float* __restrict__ dy,
     const float* __restrict__ x,
@@ -45,7 +46,7 @@ __global__ void layernorm_backward_kernel(
     float* __restrict__ dgamma,
     float* __restrict__ dbeta,
     int64_t rows, int64_t D) {
-  // Shared memory for cross-warp reduction (max 8 warps per block = 256 threads).
+  // Shared memory for cross-warp reduction (max 8 warps = 256 threads).
   __shared__ float s_dy_xhat[8];
   __shared__ float s_dy_gamma[8];
 
@@ -66,10 +67,11 @@ __global__ void layernorm_backward_kernel(
   }
 
   // Warp-level reduction using shuffle.
-  unsigned mask = 0xFFFFFFFFu;
+  // Use __activemask() to handle partial warps (blockDim.x not a multiple of 32).
+  unsigned active = __activemask();
   for (int offset = 16; offset > 0; offset >>= 1) {
-    sum_dy_xhat += __shfl_down_sync(mask, sum_dy_xhat, offset);
-    sum_dy += __shfl_down_sync(mask, sum_dy, offset);
+    sum_dy_xhat += __shfl_down_sync(active, sum_dy_xhat, offset);
+    sum_dy += __shfl_down_sync(active, sum_dy, offset);
   }
 
   // Block-level reduction via shared memory (for blocks with multiple warps).
@@ -87,9 +89,10 @@ __global__ void layernorm_backward_kernel(
   if (warp_id == 0) {
     sum_dy_xhat = (lane_id < num_warps) ? s_dy_xhat[lane_id] : 0.0f;
     sum_dy = (lane_id < num_warps) ? s_dy_gamma[lane_id] : 0.0f;
+    // All lanes in warp 0 participate; inactive values are zero so full mask is safe.
     for (int offset = 16; offset > 0; offset >>= 1) {
-      sum_dy_xhat += __shfl_down_sync(mask, sum_dy_xhat, offset);
-      sum_dy += __shfl_down_sync(mask, sum_dy, offset);
+      sum_dy_xhat += __shfl_down_sync(active, sum_dy_xhat, offset);
+      sum_dy += __shfl_down_sync(active, sum_dy, offset);
     }
     // Broadcast final result back to shared memory.
     if (lane_id == 0) {
