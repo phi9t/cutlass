@@ -17,7 +17,7 @@ namespace {
 __global__ void row_max_kernel(const float* __restrict__ input,
                                float* __restrict__ output,
                                int64_t rows, int64_t cols) {
-  int64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (row >= rows) return;
 
   const float* row_ptr = input + row * cols;
@@ -31,7 +31,7 @@ __global__ void row_max_kernel(const float* __restrict__ input,
 __global__ void row_sum_kernel(const float* __restrict__ input,
                                float* __restrict__ output,
                                int64_t rows, int64_t cols) {
-  int64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (row >= rows) return;
 
   const float* row_ptr = input + row * cols;
@@ -45,7 +45,7 @@ __global__ void row_sum_kernel(const float* __restrict__ input,
 __global__ void row_mean_kernel(const float* __restrict__ input,
                                 float* __restrict__ output,
                                 int64_t rows, int64_t cols) {
-  int64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (row >= rows) return;
 
   const float* row_ptr = input + row * cols;
@@ -60,7 +60,7 @@ __global__ void row_variance_kernel(const float* __restrict__ input,
                                     float* __restrict__ var_out,
                                     float* __restrict__ mean_out,
                                     int64_t rows, int64_t cols) {
-  int64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (row >= rows) return;
 
   const float* row_ptr = input + row * cols;
@@ -86,7 +86,7 @@ __global__ void row_mean_inv_std_kernel(const float* __restrict__ input,
                                         float* __restrict__ inv_std_out,
                                         int64_t rows, int64_t cols,
                                         float eps) {
-  int64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (row >= rows) return;
 
   const float* row_ptr = input + row * cols;

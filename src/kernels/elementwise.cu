@@ -15,26 +15,26 @@ static constexpr int kBlockSize = 256;
 __global__ void vec_add_kernel(const float* __restrict__ a,
                                const float* __restrict__ b,
                                float* __restrict__ out, int64_t n) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) out[i] = a[i] + b[i];
 }
 
 __global__ void vec_mul_kernel(const float* __restrict__ a,
                                const float* __restrict__ b,
                                float* __restrict__ out, int64_t n) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) out[i] = a[i] * b[i];
 }
 
 __global__ void vec_scale_kernel(const float* __restrict__ x, float alpha,
                                  float* __restrict__ out, int64_t n) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) out[i] = alpha * x[i];
 }
 
 __global__ void vec_exp_kernel(const float* __restrict__ x,
                                float* __restrict__ out, int64_t n) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) out[i] = expf(x[i]);
 }
 
@@ -42,7 +42,7 @@ __global__ void masked_fill_kernel(const float* __restrict__ x,
                                    const int8_t* __restrict__ mask,
                                    float fill_value,
                                    float* __restrict__ out, int64_t n) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) out[i] = mask[i] ? fill_value : x[i];
 }
 
@@ -50,7 +50,7 @@ __global__ void gather_kernel(const float* __restrict__ table,
                               const int32_t* __restrict__ indices,
                               float* __restrict__ out,
                               int64_t n, int64_t dim) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= n) return;
   int32_t idx = indices[i];
   const float* src = table + static_cast<int64_t>(idx) * dim;
@@ -58,6 +58,15 @@ __global__ void gather_kernel(const float* __restrict__ table,
   for (int64_t d = 0; d < dim; ++d) {
     dst[d] = src[d];
   }
+}
+
+__global__ void broadcast_bias_add_kernel(float* __restrict__ matrix,
+                                          const float* __restrict__ bias,
+                                          int64_t rows, int64_t cols) {
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (idx >= rows * cols) return;
+  int64_t col = idx % cols;
+  matrix[idx] += bias[col];
 }
 
 }  // namespace
@@ -141,6 +150,22 @@ Status gather_f32(Tensor2D<const float> table,
   int grid = static_cast<int>((n + kBlockSize - 1) / kBlockSize);
   gather_kernel<<<grid, kBlockSize, 0, stream.get()>>>(
       table.data, indices.data, out.data, n, dim);
+  return Status::Ok();
+}
+
+Status broadcast_bias_add_f32(Tensor2D<float> matrix,
+                              Tensor1D<const float> bias,
+                              const CudaStream& stream) {
+  int64_t rows = matrix.shape[0];
+  int64_t cols = matrix.shape[1];
+  if (bias.shape[0] != cols) {
+    return Status(StatusCode::kInvalidArgument,
+                  "broadcast_bias_add: bias size must equal matrix cols");
+  }
+  int64_t total = rows * cols;
+  int grid = static_cast<int>((total + kBlockSize - 1) / kBlockSize);
+  broadcast_bias_add_kernel<<<grid, kBlockSize, 0, stream.get()>>>(
+      matrix.data, bias.data, rows, cols);
   return Status::Ok();
 }
 

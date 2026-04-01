@@ -17,7 +17,7 @@ __global__ void cross_entropy_forward_kernel(
     float* __restrict__ loss,
     int64_t N, int64_t V) {
   // One thread per sample (v1 reference).
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= N) return;
 
   const float* row = logits + i * V;

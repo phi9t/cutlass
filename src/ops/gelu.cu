@@ -31,14 +31,14 @@ __device__ __forceinline__ float gelu_bwd(float x) {
 
 __global__ void gelu_forward_kernel(const float* __restrict__ x,
                                     float* __restrict__ y, int64_t n) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) y[i] = gelu_fwd(x[i]);
 }
 
 __global__ void gelu_backward_kernel(const float* __restrict__ dy,
                                      const float* __restrict__ x,
                                      float* __restrict__ dx, int64_t n) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) dx[i] = dy[i] * gelu_bwd(x[i]);
 }
 
