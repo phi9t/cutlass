@@ -58,5 +58,14 @@ Status gather_f32(Tensor2D<const float> table,
                   Tensor2D<float> out,
                   const CudaStream& stream);
 
+// ---------------------------------------------------------------------------
+// Broadcast bias add (in-place):  matrix[i][j] += bias[j]
+//   matrix: [rows, cols]
+//   bias:   [cols]
+// ---------------------------------------------------------------------------
+Status broadcast_bias_add_f32(Tensor2D<float> matrix,
+                              Tensor1D<const float> bias,
+                              const CudaStream& stream);
+
 }  // namespace kernels
 }  // namespace gpt

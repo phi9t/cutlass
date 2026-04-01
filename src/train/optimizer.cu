@@ -18,7 +18,7 @@ __global__ void adamw_kernel(float* __restrict__ params,
                              float lr, float beta1, float beta2,
                              float eps, float weight_decay,
                              float bc1, float bc2) {
-  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= count) return;
 
   float g = grads[i];

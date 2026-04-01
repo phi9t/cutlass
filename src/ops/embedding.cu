@@ -26,7 +26,7 @@ __global__ void scatter_add_kernel(const float* __restrict__ dY,
                                    const int32_t* __restrict__ indices,
                                    float* __restrict__ d_table,
                                    int64_t n, int64_t dim) {
-  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= n) return;
 
   int32_t row = indices[idx];

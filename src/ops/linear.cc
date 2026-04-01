@@ -5,6 +5,7 @@
 
 #include "src/ops/linear.h"
 
+#include "src/kernels/elementwise.h"
 #include "src/kernels/gemm.h"
 #include "src/kernels/reductions.h"
 
@@ -44,8 +45,15 @@ Status linear_forward(Tensor2D<const float> X,
   GPT_RETURN_IF_ERROR(
       kernels::gemm_f32(X_mut, W_T, Y, 1.0f, 0.0f, stream));
 
-  // TODO: Add bias if params.use_bias && params.bias.data != nullptr.
-  // This requires an elementwise add kernel broadcasting [D_out] over [N, D_out].
+  // Add bias: Y[i,j] += bias[j] for all rows i.
+  if (params.use_bias && params.bias.data != nullptr) {
+    Tensor1D<const float> bias_view;
+    bias_view.data = const_cast<const float*>(params.bias.data);
+    bias_view.shape = {D_out};
+    bias_view.stride = {1};
+    GPT_RETURN_IF_ERROR(
+        kernels::broadcast_bias_add_f32(Y, bias_view, stream));
+  }
 
   return Status::Ok();
 }

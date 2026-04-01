@@ -19,8 +19,8 @@ __global__ void transpose_2d_kernel(const float* __restrict__ input,
                                     int64_t M, int64_t N) {
   __shared__ float tile[kTileSize][kTileSize + 1];  // +1 avoids bank conflicts
 
-  int64_t bx = blockIdx.x * kTileSize;
-  int64_t by = blockIdx.y * kTileSize;
+  int64_t bx = static_cast<int64_t>(blockIdx.x) * kTileSize;
+  int64_t by = static_cast<int64_t>(blockIdx.y) * kTileSize;
   int64_t ix = bx + threadIdx.x;
   int64_t iy = by + threadIdx.y;
 
@@ -43,7 +43,7 @@ __global__ void split_heads_kernel(const float* __restrict__ input,
                                    int64_t Dh) {
   // input layout:  [B, T, H*Dh]  row-major
   // output layout: [B, H, T, Dh] row-major
-  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   int64_t total = B * H * T * Dh;
   if (idx >= total) return;
 
@@ -62,7 +62,7 @@ __global__ void merge_heads_kernel(const float* __restrict__ input,
                                    int64_t Dh) {
   // input layout:  [B, H, T, Dh] row-major
   // output layout: [B, T, H*Dh]  row-major
-  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   int64_t D = H * Dh;
   int64_t total = B * T * D;
   if (idx >= total) return;
@@ -86,7 +86,7 @@ __global__ void split_qkv_heads_kernel(const float* __restrict__ qkv,
                                        float* __restrict__ V,
                                        int64_t B, int64_t T, int64_t H,
                                        int64_t Dh) {
-  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   int64_t total = B * H * T * Dh;
   if (idx >= total) return;
 
@@ -110,7 +110,7 @@ __global__ void strided_copy_2d_kernel(const float* __restrict__ src,
                                        int64_t rows, int64_t cols,
                                        int64_t src_row_stride,
                                        int64_t dst_row_stride) {
-  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   int64_t total = rows * cols;
   if (idx >= total) return;
 

@@ -95,12 +95,26 @@ GPUAttentionResult run_gpu_attention(int64_t B, int64_t T, int64_t D, int64_t H,
 
   auto status = attention_forward(X, cfg, params, output, state, stream);
   EXPECT_TRUE(status.ok()) << status.message();
+
+  GPUAttentionResult result;
+  auto cleanup = [&]() {
+    cudaFree(d_X); cudaFree(d_out);
+    cudaFree(d_W_qkv); cudaFree(d_b_qkv); cudaFree(d_W_o); cudaFree(d_b_o);
+    cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
+    cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
+  };
+
+  if (!status.ok()) {
+    cleanup();
+    return result;
+  }
+
   stream.synchronize();
 
-  std::vector<float> h_out(B * T * D);
-  std::vector<float> h_probs(B * H * T * T);
-  cudaMemcpy(h_out.data(), d_out, B * T * D * sizeof(float), cudaMemcpyDeviceToHost);
-  cudaMemcpy(h_probs.data(), d_probs, B * H * T * T * sizeof(float), cudaMemcpyDeviceToHost);
+  result.output.resize(B * T * D);
+  result.probs.resize(B * H * T * T);
+  cudaMemcpy(result.output.data(), d_out, B * T * D * sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(result.probs.data(), d_probs, B * H * T * T * sizeof(float), cudaMemcpyDeviceToHost);
 
   // Compare against CPU reference.
   auto cpu_result = test::cpu_attention_forward(
@@ -110,15 +124,11 @@ GPUAttentionResult run_gpu_attention(int64_t B, int64_t T, int64_t D, int64_t H,
       use_bias ? h_b_o.data() : nullptr,
       B, T, D, H, causal, use_bias);
 
-  EXPECT_TRUE(test::vectors_near(h_out, cpu_result.output, 1e-3f, 1e-2f))
+  EXPECT_TRUE(test::vectors_near(result.output, cpu_result.output, 1e-3f, 1e-2f))
       << "GPU attention forward output doesn't match CPU reference";
 
-  cudaFree(d_X); cudaFree(d_out);
-  cudaFree(d_W_qkv); cudaFree(d_b_qkv); cudaFree(d_W_o); cudaFree(d_b_o);
-  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
-  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
-
-  return {h_out, h_probs};
+  cleanup();
+  return result;
 }
 
 }  // namespace
