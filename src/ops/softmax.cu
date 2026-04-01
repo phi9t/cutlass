@@ -3,6 +3,7 @@
 #include "src/ops/softmax.h"
 
 #include <cfloat>
+#include <climits>
 #include <cuda_runtime.h>
 
 namespace gpt {
@@ -92,6 +93,10 @@ Status masked_softmax_forward(Tensor2D<const float> input,
                   "masked_softmax_forward: output shape mismatch");
   }
 
+  if (rows > INT_MAX) {
+    return Status(StatusCode::kInvalidArgument,
+                  "masked_softmax_forward: rows exceeds CUDA grid limit");
+  }
   // V1 reference: one block per row, one thread.
   masked_softmax_forward_kernel<<<static_cast<int>(rows), 1, 0, stream.get()>>>(
       input.data, mask.data, output.data, rows, cols);
@@ -105,6 +110,10 @@ Status masked_softmax_backward(Tensor2D<const float> dP,
   int64_t rows = dP.shape[0];
   int64_t cols = dP.shape[1];
 
+  if (rows > INT_MAX) {
+    return Status(StatusCode::kInvalidArgument,
+                  "masked_softmax_backward: rows exceeds CUDA grid limit");
+  }
   masked_softmax_backward_kernel<<<static_cast<int>(rows), 1, 0, stream.get()>>>(
       dP.data, P.data, dX.data, rows, cols);
   return Status::Ok();

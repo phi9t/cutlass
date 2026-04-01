@@ -3,6 +3,7 @@
 #include "src/ops/loss.h"
 
 #include <cfloat>
+#include <climits>
 #include <cuda_runtime.h>
 
 namespace gpt {
@@ -105,6 +106,10 @@ Status cross_entropy_backward(Tensor2D<const float> logits,
   int64_t N = logits.shape[0];
   int64_t V = logits.shape[1];
 
+  if (N > INT_MAX) {
+    return Status(StatusCode::kInvalidArgument,
+                  "cross_entropy_backward: N exceeds CUDA grid limit");
+  }
   // One block per sample, single thread (v1 reference).
   cross_entropy_backward_kernel<<<static_cast<int>(N), 1, 0, stream.get()>>>(
       logits.data, targets.data, d_logits.data, N, V);

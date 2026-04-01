@@ -4,6 +4,7 @@
 
 #include "src/kernels/reductions.h"
 
+#include <climits>
 #include <cuda_runtime.h>
 
 namespace gpt {
@@ -143,6 +144,10 @@ Status layernorm_forward(Tensor2D<const float> x,
   GPT_RETURN_IF_ERROR(kernels::row_mean_inv_std_f32(
       x, state.mean, state.inv_std, params.eps, stream));
 
+  if (rows > INT_MAX) {
+    return Status(StatusCode::kInvalidArgument,
+                  "layernorm_forward: rows exceeds CUDA grid limit");
+  }
   // Normalize + affine.
   int block = std::min(static_cast<int>(D), 256);
   layernorm_forward_kernel<<<static_cast<int>(rows), block, 0, stream.get()>>>(
@@ -162,6 +167,10 @@ Status layernorm_backward(Tensor2D<const float> dy,
   int64_t rows = x.shape[0];
   int64_t D = x.shape[1];
 
+  if (rows > INT_MAX) {
+    return Status(StatusCode::kInvalidArgument,
+                  "layernorm_backward: rows exceeds CUDA grid limit");
+  }
   int bwd_block = std::min(static_cast<int>(D), 256);
   layernorm_backward_kernel<<<static_cast<int>(rows), bwd_block, 0, stream.get()>>>(
       dy.data, x.data, params.gamma.data,
