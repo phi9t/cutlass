@@ -81,8 +81,39 @@ Status Trainer::train_step(Tensor2D<const int32_t> input_ids,
   cudaFree(d_loss);
 
   // 3. Backward.
-  // TODO: Zero grads, compute d_logits from cross_entropy_backward,
-  //       then gpt_backward.
+  // Zero grads.
+  cudaMemsetAsync(grad_buffer_, 0,
+                  static_cast<size_t>(param_count_) * sizeof(float),
+                  compute_stream_.get());
+
+  // Allocate d_logits buffer on first use.
+  int64_t NT = B * T;
+  int64_t V = config_.model_config.vocab_size;
+  if (!d_logits_buffer_) {
+    cudaError_t alloc_err = cudaMalloc(
+        &d_logits_buffer_, static_cast<size_t>(NT * V) * sizeof(float));
+    if (alloc_err != cudaSuccess) {
+      return Status(StatusCode::kCudaError, cudaGetErrorString(alloc_err));
+    }
+  }
+
+  // Compute d_logits from cross-entropy backward.
+  {
+    Tensor2D<const float> logits_view{fwd_state_.logits.data,
+                                       fwd_state_.logits.shape,
+                                       fwd_state_.logits.stride};
+    Tensor2D<float> d_logits_view{d_logits_buffer_, {NT, V}, {V, 1}};
+    GPT_RETURN_IF_ERROR(ops::cross_entropy_backward(
+        logits_view, targets_flat, d_logits_view, compute_stream_));
+  }
+
+  // Model backward.
+  {
+    Tensor2D<const float> d_logits_const{d_logits_buffer_, {NT, V}, {V, 1}};
+    GPT_RETURN_IF_ERROR(model::gpt_backward(
+        d_logits_const, input_ids, config_.model_config, params_,
+        fwd_state_, grads_, compute_stream_));
+  }
 
   // 4. DDP gradient sync.
   if (nccl_.is_initialized()) {
@@ -105,6 +136,7 @@ void Trainer::release() {
   nccl_.destroy();
   if (param_buffer_) { cudaFree(param_buffer_); param_buffer_ = nullptr; }
   if (grad_buffer_) { cudaFree(grad_buffer_); grad_buffer_ = nullptr; }
+  if (d_logits_buffer_) { cudaFree(d_logits_buffer_); d_logits_buffer_ = nullptr; }
 }
 
 Trainer::~Trainer() { release(); }

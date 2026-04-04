@@ -23,6 +23,7 @@ namespace model {
 // Complete forward state for the model.
 struct GPTForwardState {
   Tensor3D<float> embed_out;              // [B, T, D]
+  std::vector<Tensor3D<float>> block_inputs;  // saved input per layer [B, T, D]
   std::vector<BlockForwardState> blocks;  // per-layer
   Tensor3D<float> final_ln_out;           // [B, T, D]
   ops::LayerNormState final_ln_state;

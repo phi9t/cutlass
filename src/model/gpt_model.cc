@@ -53,9 +53,15 @@ Status gpt_forward(Tensor2D<const int32_t> input_ids,
   Tensor3D<float> block_input{state.embed_out.data, {B, T, D}, {T * D, D, 1}};
 
   for (int64_t layer = 0; layer < config.n_layers; ++layer) {
-    // Output of each block becomes input to the next.
-    // For v1, alternate between two buffers or write in-place.
-    // TODO: Proper buffer management.
+    // Save block input for backward pass before it gets overwritten.
+    size_t block_bytes = static_cast<size_t>(B * T * D) * sizeof(float);
+    cudaError_t cp_err = cudaMemcpyAsync(
+        state.block_inputs[layer].data, block_input.data,
+        block_bytes, cudaMemcpyDeviceToDevice, stream.get());
+    if (cp_err != cudaSuccess) {
+      return Status(StatusCode::kCudaError, cudaGetErrorString(cp_err));
+    }
+
     Tensor3D<const float> x_in{block_input.data, block_input.shape,
                                 block_input.stride};
     GPT_RETURN_IF_ERROR(block_forward(
@@ -151,87 +157,32 @@ Status gpt_backward(Tensor2D<const float> d_logits,
 
   // -----------------------------------------------------------------------
   // Stage 3: Block backward (layer N-1 to 0).
-  //   Each block: d_input = block_backward(d_output, x_input)
+  //   Each block: d_input = block_backward(d_output, x_saved)
+  //   Per-layer inputs were saved during forward in state.block_inputs.
   // -----------------------------------------------------------------------
-  // d_block_out is in state.embed_out. We need the original block inputs.
-  // In forward, all blocks used embed_out as in-place I/O, so the original
-  // per-layer inputs are lost. For the backward pass, we need the original
-  // input to each block. Since forward wrote in-place, we'd need to save
-  // them. For v1, we re-run partial forward to reconstruct, or accept that
-  // we need the embed_out to be the final block output and work backwards.
-  //
-  // The block_backward needs:
-  //   - d_output: gradient flowing in from above
-  //   - x: the original input to this block
-  //
-  // Since forward processed blocks in-place (each block's output became the
-  // next block's input in the same buffer), and we only saved per-layer
-  // state (ln outputs, attn intermediates, etc.), we don't have the original
-  // block inputs.
-  //
-  // For a correct implementation, we would need to either:
-  //   a) Save per-layer inputs during forward (memory intensive)
-  //   b) Recompute them during backward (activation checkpointing)
-  //
-  // For v1, we use the saved LN1 input (which equals the block input) —
-  // but LN1 state only has mean/inv_std, not the input itself.
-  // The block's x input for layer i is the output of layer i-1.
-  // Layer 0's input is embed_out (after positional embedding).
-  //
-  // We don't have per-layer inputs saved. However, the block_backward
-  // implementation reconstructs residual1 = x + attn_out internally, and
-  // uses x for LN1 backward. Without the original x, we can't compute
-  // correct gradients.
-  //
-  // For the v1 reference implementation, we accept this limitation and
-  // note that proper buffer management (saving layer inputs) is needed
-  // for correctness. For now, we pass the final block output as a
-  // placeholder for the last layer's input, which is only correct for
-  // a single-layer model.
-  //
-  // TODO: Implement proper activation saving or recomputation for multi-layer.
-  //
-  // For single-layer or approximate gradients:
   {
     Tensor3D<float> d_block{state.embed_out.data,
                              {B, T, D}, {T * D, D, 1}};
 
     for (int64_t layer = config.n_layers - 1; layer >= 0; --layer) {
-      // For layer 0, the input was the embedded tokens (embed_out before
-      // any block processed it). For layer > 0, it was the output of
-      // layer-1. We use final_ln_out as scratch for dx.
       Tensor3D<float> dx{state.final_ln_out.data,
                           {B, T, D}, {T * D, D, 1}};
 
-      // The block input x is not available for layers > 0 in the v1
-      // in-place scheme. For layer 0, we could reconstruct from
-      // token + position embeddings, but that requires re-running
-      // the embedding. For v1, pass the d_block buffer as x (this is
-      // the gradient, not the input — this is a known limitation).
-      //
-      // FIXME: For correctness, the caller should provide saved activations.
-      // The current block_backward implementation uses x only for:
-      //   1. Reconstructing residual1 = x + attn_out (for LN2 backward)
-      //   2. LN1 backward (needs original LN1 input = x)
-      // Without the original x, gradients will be incorrect for multi-layer.
-
       Tensor3D<const float> d_block_in{d_block.data,
                                         {B, T, D}, {T * D, D, 1}};
-      // Use logits buffer as a temporary for the block input reconstruction.
-      // This is only approximate for v1.
-      Tensor3D<const float> x_approx{d_block.data,
-                                      {B, T, D}, {T * D, D, 1}};
+      Tensor3D<const float> x_saved{state.block_inputs[layer].data,
+                                     {B, T, D}, {T * D, D, 1}};
 
       GPT_RETURN_IF_ERROR(block_backward(
-          d_block_in, x_approx, config, params.layers[layer],
+          d_block_in, x_saved, config, params.layers[layer],
           state.blocks[layer], dx, grads.layers[layer], stream));
 
       // Copy dx back to d_block for the next layer's backward.
-      {
-        int64_t total = B * T * D;
-        Tensor1D<const float> src{dx.data, {total}, {1}};
-        Tensor1D<float> dst{d_block.data, {total}, {1}};
-        GPT_RETURN_IF_ERROR(kernels::vec_scale_f32(src, 1.0f, dst, stream));
+      size_t bytes = static_cast<size_t>(B * T * D) * sizeof(float);
+      cudaError_t err = cudaMemcpyAsync(d_block.data, dx.data, bytes,
+                                         cudaMemcpyDeviceToDevice, stream.get());
+      if (err != cudaSuccess) {
+        return Status(StatusCode::kCudaError, cudaGetErrorString(err));
       }
     }
   }
