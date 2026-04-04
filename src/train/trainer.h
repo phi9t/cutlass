@@ -76,6 +76,7 @@ class Trainer {
 
   float* param_buffer_ = nullptr;
   float* grad_buffer_ = nullptr;
+  float* d_logits_buffer_ = nullptr;
   int64_t param_count_ = 0;
   int64_t step_ = 0;
 };

@@ -3,7 +3,7 @@
 // Tests cover:
 //   - Block forward: compiles and links with full workspace
 //   - Block forward: output shape matches input shape
-//   - Block backward: returns kNotImplemented (current state)
+//   - Block backward: signature and dispatch validation
 //   - CPU-only: LayerNorm → Attention → Residual sub-block structure
 //   - CPU-only: MLP sub-block (fc1 → GELU → fc2) structure
 
@@ -240,7 +240,9 @@ TEST_F(GPTBlockGPUTest, ForwardCompiles) {
   cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
-TEST_F(GPTBlockGPUTest, BackwardReturnsNotImplemented) {
+TEST_F(GPTBlockGPUTest, BackwardSignatureCompiles) {
+  // Verify that block_backward compiles and accepts the expected signature.
+  // Full functional test is in the integration test (gpt_overfit_test).
   GPTConfig config;
   config.d_model = 4;
   config.n_heads = 2;
@@ -256,7 +258,8 @@ TEST_F(GPTBlockGPUTest, BackwardReturnsNotImplemented) {
 
   auto status = block_backward(d_output, x, config, params, state, dx,
                                 grads, stream_);
-  EXPECT_EQ(status.code(), StatusCode::kNotImplemented);
+  // With null pointers, expect a CUDA error, not kNotImplemented.
+  EXPECT_NE(status.code(), StatusCode::kNotImplemented);
 }
 
 // --- CPU-only: MLP sub-block structure verification ---

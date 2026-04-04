@@ -83,6 +83,7 @@ float* allocate_forward_state(const GPTConfig& cfg, int64_t B, int64_t T,
                     + B*T*D;      // context_merged
 
   int64_t total = B*T*D           // embed_out
+                + L * B*T*D      // block_inputs (saved per layer)
                 + L * per_block
                 + B*T*D           // final_ln_out
                 + B*T             // final_ln mean
@@ -102,6 +103,12 @@ float* allocate_forward_state(const GPTConfig& cfg, int64_t B, int64_t T,
 
   // embed_out
   fwd.embed_out = {advance(B*T*D), {B,T,D}, {T*D, D, 1}};
+
+  // block_inputs: saved input per layer for backward.
+  fwd.block_inputs.resize(L);
+  for (int64_t l = 0; l < L; ++l) {
+    fwd.block_inputs[l] = {advance(B*T*D), {B,T,D}, {T*D, D, 1}};
+  }
 
   // Per-block state.
   fwd.blocks.resize(L);

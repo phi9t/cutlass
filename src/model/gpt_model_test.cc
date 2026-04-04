@@ -5,7 +5,7 @@
 //   - GPTForwardState: struct layout
 //   - GPTGrads: struct layout
 //   - GPU compile check: gpt_forward with full workspace
-//   - gpt_backward: returns kNotImplemented
+//   - gpt_backward: struct and signature validation
 //   - CPU-only: end-to-end tiny model (embedding → block → LN → LM head)
 
 #include "gtest/gtest.h"
@@ -112,6 +112,7 @@ TEST(GPTConfigTest, ParamCountScalesWithLayers) {
 TEST(GPTModelStructTest, ForwardStateLayout) {
   GPTForwardState state{};
   EXPECT_EQ(state.embed_out.data, nullptr);
+  EXPECT_TRUE(state.block_inputs.empty());
   EXPECT_TRUE(state.blocks.empty());
   EXPECT_EQ(state.final_ln_out.data, nullptr);
   EXPECT_EQ(state.logits.data, nullptr);
@@ -139,7 +140,9 @@ class GPTModelGPUTest : public ::testing::Test {
   CudaStream stream_;
 };
 
-TEST_F(GPTModelGPUTest, BackwardReturnsNotImplemented) {
+TEST_F(GPTModelGPUTest, BackwardSignatureCompiles) {
+  // Verify that gpt_backward compiles and accepts the expected signature.
+  // Full functional test is in the integration test (gpt_overfit_test).
   GPTConfig config;
   config.d_model = 4;
   config.n_heads = 2;
@@ -152,9 +155,12 @@ TEST_F(GPTModelGPUTest, BackwardReturnsNotImplemented) {
   Tensor2D<const float> d_logits{nullptr, {2, 16}, {16, 1}};
   Tensor2D<const int32_t> input_ids{nullptr, {1, 2}, {2, 1}};
 
+  // With null pointers, backward will fail on the first CUDA op,
+  // but the function signature and dispatch should work.
   auto status = gpt_backward(d_logits, input_ids, config, params, state,
                                grads, stream_);
-  EXPECT_EQ(status.code(), StatusCode::kNotImplemented);
+  // Expect a CUDA error (null pointers), not kNotImplemented.
+  EXPECT_NE(status.code(), StatusCode::kNotImplemented);
 }
 
 // --- CPU-only: end-to-end tiny model verification ---
