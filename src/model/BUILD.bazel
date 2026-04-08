@@ -65,8 +65,10 @@ cc_test(
     timeout = "moderate",
     deps = [
         ":gpt_model",
+        "//src/ops:loss",
         "//tests:test_main",
         "//tests:test_utils",
+        "//tests/integration:gpt_test_helpers",
         "@googletest//:gtest",
     ],
     tags = ["gpu"],

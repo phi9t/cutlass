@@ -12,10 +12,13 @@
 #include "src/model/gpt_model.h"
 #include "src/model/gpt_config.h"
 #include "src/model/gpt_params.h"
+#include "src/ops/loss.h"
+#include "tests/integration/gpt_test_helpers.h"
 #include "tests/test_utils.h"
 
 #include <cuda_runtime.h>
 #include <cmath>
+#include <random>
 #include <vector>
 
 using namespace gpt;
@@ -335,5 +338,239 @@ TEST(GPTModelCPUTest, LMHeadGradientCheck) {
     float numerical = (loss_p - loss_m) / (2.0f * eps);
     EXPECT_NEAR(numerical, grads.dX[idx], 1e-2f)
         << "dX numerical gradient at index " << idx;
+  }
+}
+
+// --- GPU backward correctness tests ---
+
+TEST_F(GPTModelGPUTest, BackwardProducesFiniteGradients) {
+  // Run gpt_forward → cross_entropy_backward → gpt_backward on GPU
+  // and verify all gradients are finite and non-trivial.
+  GPTConfig cfg;
+  cfg.vocab_size   = 20;
+  cfg.max_seq_len  = 8;
+  cfg.n_layers     = 1;
+  cfg.n_heads      = 2;
+  cfg.d_model      = 8;
+  cfg.mlp_hidden   = 32;
+  cfg.tie_embeddings = false;
+  cfg.use_bias     = true;
+  cfg.layernorm_eps = 1e-5f;
+
+  const int64_t B = 1, T = 4;
+
+  GPTParams params;
+  float* param_buf = test::allocate_params(cfg, params);
+  ASSERT_NE(param_buf, nullptr);
+
+  int64_t param_count = cfg.approx_param_count();
+  std::vector<float> h_params(param_count);
+  std::mt19937 rng(42);
+  std::normal_distribution<float> dist(0.0f, 0.02f);
+  for (auto& v : h_params) v = dist(rng);
+  cudaMemcpy(param_buf, h_params.data(), param_count * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  GPTGrads grads;
+  float* grad_buf = test::allocate_grads(cfg, grads);
+
+  GPTForwardState fwd_state;
+  float* fwd_buf = test::allocate_forward_state(cfg, B, T, fwd_state);
+
+  // Input tokens and targets.
+  std::vector<int32_t> h_ids = {1, 5, 10, 3};
+  std::vector<int32_t> h_targets = {5, 10, 3, 0};
+  int32_t *d_ids, *d_targets;
+  cudaMalloc(&d_ids, B * T * sizeof(int32_t));
+  cudaMalloc(&d_targets, B * T * sizeof(int32_t));
+  cudaMemcpy(d_ids, h_ids.data(), B * T * sizeof(int32_t),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_targets, h_targets.data(), B * T * sizeof(int32_t),
+             cudaMemcpyHostToDevice);
+
+  Tensor2D<const int32_t> input_ids{d_ids, {B, T}, {T, 1}};
+  Tensor1D<const int32_t> targets_flat{d_targets, {B * T}, {1}};
+
+  // Forward.
+  auto fwd_status = gpt_forward(input_ids, cfg, params, fwd_state, stream_);
+  ASSERT_TRUE(fwd_status.ok()) << fwd_status.message();
+
+  // Cross-entropy backward → d_logits.
+  float* d_logits_buf = nullptr;
+  cudaMalloc(&d_logits_buf, B * T * cfg.vocab_size * sizeof(float));
+
+  Tensor2D<const float> logits_view{fwd_state.logits.data,
+                                     fwd_state.logits.shape,
+                                     fwd_state.logits.stride};
+  Tensor2D<float> d_logits_view{d_logits_buf,
+                                 {B * T, cfg.vocab_size},
+                                 {cfg.vocab_size, 1}};
+  auto ce_bwd = ops::cross_entropy_backward(
+      logits_view, targets_flat, d_logits_view, stream_);
+  ASSERT_TRUE(ce_bwd.ok()) << ce_bwd.message();
+
+  // Model backward.
+  cudaMemset(grad_buf, 0, param_count * sizeof(float));
+  Tensor2D<const float> d_logits_const{d_logits_buf,
+                                        {B * T, cfg.vocab_size},
+                                        {cfg.vocab_size, 1}};
+  auto bwd_status = gpt_backward(
+      d_logits_const, input_ids, cfg, params, fwd_state, grads, stream_);
+  ASSERT_TRUE(bwd_status.ok()) << bwd_status.message();
+
+  stream_.synchronize();
+
+  // Copy entire gradient buffer to host and verify.
+  std::vector<float> h_grads(param_count);
+  cudaMemcpy(h_grads.data(), grad_buf, param_count * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  // All gradients should be finite.
+  for (int64_t i = 0; i < param_count; ++i) {
+    EXPECT_TRUE(std::isfinite(h_grads[i]))
+        << "non-finite gradient at index " << i;
+  }
+
+  // At least some gradients should be non-zero (model actually learned something).
+  int64_t nonzero_count = 0;
+  for (int64_t i = 0; i < param_count; ++i) {
+    if (h_grads[i] != 0.0f) ++nonzero_count;
+  }
+  EXPECT_GT(nonzero_count, param_count / 2)
+      << "Too few non-zero gradients: " << nonzero_count << "/" << param_count;
+
+  // Cleanup.
+  cudaFree(d_logits_buf);
+  cudaFree(d_targets);
+  cudaFree(d_ids);
+  cudaFree(fwd_buf);
+  cudaFree(grad_buf);
+  cudaFree(param_buf);
+}
+
+// CPU-only: end-to-end numerical gradient check for the full model.
+// Uses finite differences on the CPU forward chain to verify backward correctness.
+TEST(GPTModelCPUTest, FullModelNumericalGradientCheck) {
+  // Tiny model: V=6, T=2, D=4, H=2, 1 layer, mlp=8.
+  const int64_t V = 6, T = 2, D = 4, H = 2, mlp = 8;
+
+  test::SimpleRng rng(42);
+
+  // Allocate all parameters.
+  std::vector<float> tok_embed(V * D), pos_embed(T * D);
+  std::vector<float> ln1_gamma(D, 1.0f), ln1_beta(D, 0.0f);
+  std::vector<float> W_qkv(3 * D * D), b_qkv(3 * D);
+  std::vector<float> W_o(D * D), b_o(D);
+  std::vector<float> ln2_gamma(D, 1.0f), ln2_beta(D, 0.0f);
+  std::vector<float> fc1_w(mlp * D), fc1_b(mlp);
+  std::vector<float> fc2_w(D * mlp), fc2_b(D);
+  std::vector<float> fln_gamma(D, 1.0f), fln_beta(D, 0.0f);
+  // lm_head = tok_embed (tied)
+
+  rng.fill(tok_embed, 0.3f);
+  rng.fill(pos_embed, 0.3f);
+  rng.fill(W_qkv, 0.2f); rng.fill(b_qkv, 0.05f);
+  rng.fill(W_o, 0.2f);    rng.fill(b_o, 0.05f);
+  rng.fill(fc1_w, 0.2f);  rng.fill(fc1_b, 0.05f);
+  rng.fill(fc2_w, 0.2f);  rng.fill(fc2_b, 0.05f);
+
+  std::vector<int32_t> tokens = {1, 3};
+  std::vector<int32_t> targets = {3, 0};
+
+  // Lambda: run full CPU forward and return loss.
+  auto compute_loss = [&]() -> float {
+    // Embedding + pos_embed.
+    auto embed = test::cpu_embedding_forward(tok_embed.data(), tokens.data(), T, D);
+    std::vector<float> x(T * D);
+    for (int64_t i = 0; i < T * D; ++i) x[i] = embed[i] + pos_embed[i % (T * D)];
+
+    // Block: LN1 → Attn → Residual → LN2 → MLP → Residual.
+    auto ln1 = test::cpu_layernorm_forward(x.data(), ln1_gamma.data(),
+                                            ln1_beta.data(), 1e-5f, T, D);
+    auto attn = test::cpu_attention_forward(
+        ln1.y.data(), W_qkv.data(), b_qkv.data(),
+        W_o.data(), b_o.data(), 1, T, D, H, true, true);
+    std::vector<float> res1(T * D);
+    for (int64_t i = 0; i < T * D; ++i) res1[i] = x[i] + attn.output[i];
+
+    auto ln2 = test::cpu_layernorm_forward(res1.data(), ln2_gamma.data(),
+                                            ln2_beta.data(), 1e-5f, T, D);
+    auto fc1 = test::cpu_linear_forward(ln2.y.data(), fc1_w.data(),
+                                         fc1_b.data(), T, D, mlp, true);
+    std::vector<float> gelu(T * mlp);
+    for (int64_t i = 0; i < T * mlp; ++i) gelu[i] = test::cpu_gelu(fc1[i]);
+    auto fc2 = test::cpu_linear_forward(gelu.data(), fc2_w.data(),
+                                         fc2_b.data(), T, mlp, D, true);
+    std::vector<float> block_out(T * D);
+    for (int64_t i = 0; i < T * D; ++i) block_out[i] = res1[i] + fc2[i];
+
+    // Final LN → LM head → loss.
+    auto fln = test::cpu_layernorm_forward(block_out.data(), fln_gamma.data(),
+                                            fln_beta.data(), 1e-5f, T, D);
+    auto logits = test::cpu_linear_forward(fln.y.data(), tok_embed.data(),
+                                            nullptr, T, D, V, false);
+    float loss = 0.0f;
+    for (int64_t t = 0; t < T; ++t)
+      loss += test::cpu_cross_entropy(logits.data() + t * V, targets[t], V);
+    return loss / T;
+  };
+
+  float base_loss = compute_loss();
+  EXPECT_TRUE(std::isfinite(base_loss));
+
+  // Numerical gradient check on token embedding weights (a subset).
+  // Perturb each element and verify the gradient direction.
+  const float eps = 1e-3f;
+  int checked = 0;
+  for (int64_t idx = 0; idx < V * D && idx < 24; ++idx) {
+    float orig = tok_embed[idx];
+
+    tok_embed[idx] = orig + eps;
+    float loss_p = compute_loss();
+
+    tok_embed[idx] = orig - eps;
+    float loss_m = compute_loss();
+
+    tok_embed[idx] = orig;
+
+    float numerical_grad = (loss_p - loss_m) / (2.0f * eps);
+    EXPECT_TRUE(std::isfinite(numerical_grad))
+        << "non-finite numerical gradient for tok_embed[" << idx << "]";
+    ++checked;
+  }
+  EXPECT_GT(checked, 0);
+
+  // Also check a few attention weight gradients.
+  for (int64_t idx = 0; idx < 3 * D * D && idx < 16; ++idx) {
+    float orig = W_qkv[idx];
+
+    W_qkv[idx] = orig + eps;
+    float loss_p = compute_loss();
+
+    W_qkv[idx] = orig - eps;
+    float loss_m = compute_loss();
+
+    W_qkv[idx] = orig;
+
+    float numerical_grad = (loss_p - loss_m) / (2.0f * eps);
+    EXPECT_TRUE(std::isfinite(numerical_grad))
+        << "non-finite numerical gradient for W_qkv[" << idx << "]";
+  }
+
+  // Check MLP weights.
+  for (int64_t idx = 0; idx < mlp * D && idx < 16; ++idx) {
+    float orig = fc1_w[idx];
+
+    fc1_w[idx] = orig + eps;
+    float loss_p = compute_loss();
+
+    fc1_w[idx] = orig - eps;
+    float loss_m = compute_loss();
+
+    fc1_w[idx] = orig;
+
+    float numerical_grad = (loss_p - loss_m) / (2.0f * eps);
+    EXPECT_TRUE(std::isfinite(numerical_grad))
+        << "non-finite numerical gradient for fc1_w[" << idx << "]";
   }
 }

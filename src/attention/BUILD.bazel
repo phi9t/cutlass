@@ -50,6 +50,7 @@ cc_test(
     timeout = "moderate",
     deps = [
         ":attention",
+        "//src/core",
         "//tests:test_main",
         "//tests:test_utils",
         "@googletest//:gtest",

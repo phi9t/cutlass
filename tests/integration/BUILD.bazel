@@ -4,6 +4,21 @@
 
 package(default_visibility = ["//visibility:private"])
 
+cc_library(
+    name = "gpt_test_helpers",
+    hdrs = ["gpt_test_helpers.h"],
+    visibility = [
+        "//src:__subpackages__",
+        "//tests:__subpackages__",
+    ],
+    deps = [
+        "//src/model:gpt_config",
+        "//src/model:gpt_model",
+        "//src/model:gpt_params",
+        "//third_party/cuda:cudart",
+    ],
+)
+
 cc_test(
     name = "kernel_gpu_test",
     srcs = ["kernel_gpu_test.cc"],
@@ -41,6 +56,7 @@ cc_test(
     size = "large",
     timeout = "long",
     deps = [
+        ":gpt_test_helpers",
         "//src/model:gpt_model",
         "//src/train:optimizer",
         "//src/ops:loss",

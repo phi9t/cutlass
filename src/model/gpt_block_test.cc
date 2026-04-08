@@ -15,6 +15,7 @@
 
 #include <cuda_runtime.h>
 #include <cmath>
+#include <random>
 #include <vector>
 
 using namespace gpt;
@@ -322,4 +323,190 @@ TEST(GPTBlockCPUTest, MLPSubBlockForwardBackward) {
   // dW should have correct shapes.
   EXPECT_EQ(static_cast<int64_t>(fc1_grads.dW.size()), mlp_hidden * D);
   EXPECT_EQ(static_cast<int64_t>(fc2_grads.dW.size()), D * mlp_hidden);
+}
+
+// GPU: Run block_forward → block_backward and verify gradients are finite
+// and non-trivial. Exercises the full block backward path on actual GPU data.
+TEST_F(GPTBlockGPUTest, BackwardProducesFiniteGradients) {
+  const int64_t B = 1, T = 3, D = 8, H = 2, M = 16;
+  int64_t Dh = D / H;
+
+  GPTConfig config;
+  config.d_model = D;
+  config.n_heads = H;
+  config.mlp_hidden = M;
+  config.use_bias = true;
+  config.layernorm_eps = 1e-5f;
+
+  // Allocate layer parameters.
+  int64_t param_size = 2 * D             // LN1 gamma/beta
+                     + 3 * D * D + 3 * D // W_qkv + b_qkv
+                     + D * D + D          // W_o + b_o
+                     + 2 * D              // LN2 gamma/beta
+                     + M * D + M          // fc1
+                     + D * M + D;         // fc2
+  float* param_buf = nullptr;
+  cudaMalloc(&param_buf, param_size * sizeof(float));
+
+  // Initialize with small random values on host.
+  std::vector<float> h_params(param_size);
+  std::mt19937 rng(42);
+  std::normal_distribution<float> dist(0.0f, 0.1f);
+  for (auto& v : h_params) v = dist(rng);
+  cudaMemcpy(param_buf, h_params.data(), param_size * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  // Wire parameter views.
+  float* ptr = param_buf;
+  auto advance = [&](int64_t n) -> float* {
+    float* p = ptr; ptr += n; return p;
+  };
+
+  LayerParams lp;
+  lp.ln1.gamma = {advance(D), {D}, {1}};
+  lp.ln1.beta = {advance(D), {D}, {1}};
+  lp.ln1.eps = 1e-5f;
+  lp.attn.W_qkv = {advance(3*D*D), {3*D, D}, {D, 1}};
+  lp.attn.b_qkv = {advance(3*D), {3*D}, {1}};
+  lp.attn.W_o = {advance(D*D), {D, D}, {D, 1}};
+  lp.attn.b_o = {advance(D), {D}, {1}};
+  lp.ln2.gamma = {advance(D), {D}, {1}};
+  lp.ln2.beta = {advance(D), {D}, {1}};
+  lp.ln2.eps = 1e-5f;
+  lp.fc1.weight = {advance(M*D), {M, D}, {D, 1}};
+  lp.fc1.bias = {advance(M), {M}, {1}};
+  lp.fc1.use_bias = true;
+  lp.fc2.weight = {advance(D*M), {D, M}, {M, 1}};
+  lp.fc2.bias = {advance(D), {D}, {1}};
+  lp.fc2.use_bias = true;
+
+  // Allocate block state buffers.
+  int64_t state_size = B*T*D       // ln1_out
+                     + B*T*D       // ln2_out
+                     + B*T + B*T   // ln1 mean/inv
+                     + B*T + B*T   // ln2 mean/inv
+                     + B*T*D       // attn_out
+                     + B*T*M       // fc1_out
+                     + B*T*M       // gelu_out
+                     + B*T*D       // fc2_out
+                     + B*T*3*D     // qkv
+                     + 3*B*H*T*Dh  // Q, K, V
+                     + 2*B*H*T*T   // scores, probs
+                     + B*H*T*Dh    // context
+                     + B*T*D;      // context_merged
+  float* state_buf = nullptr;
+  cudaMalloc(&state_buf, state_size * sizeof(float));
+  cudaMemset(state_buf, 0, state_size * sizeof(float));
+
+  float* sp = state_buf;
+  auto sadv = [&](int64_t n) -> float* {
+    float* p = sp; sp += n; return p;
+  };
+
+  BlockForwardState state;
+  state.ln1_out = {sadv(B*T*D), {B,T,D}, {T*D, D, 1}};
+  state.ln2_out = {sadv(B*T*D), {B,T,D}, {T*D, D, 1}};
+  state.ln1_state.mean = {sadv(B*T), {B*T}, {1}};
+  state.ln1_state.inv_std = {sadv(B*T), {B*T}, {1}};
+  state.ln2_state.mean = {sadv(B*T), {B*T}, {1}};
+  state.ln2_state.inv_std = {sadv(B*T), {B*T}, {1}};
+  state.attn_out = {sadv(B*T*D), {B,T,D}, {T*D, D, 1}};
+  state.fc1_out = {sadv(B*T*M), {B,T,M}, {T*M, M, 1}};
+  state.gelu_out = {sadv(B*T*M), {B,T,M}, {T*M, M, 1}};
+  state.fc2_out = {sadv(B*T*D), {B,T,D}, {T*D, D, 1}};
+  state.attn_state.qkv = {sadv(B*T*3*D), {B,T,3*D}, {T*3*D, 3*D, 1}};
+  state.attn_state.Q = {sadv(B*H*T*Dh), {B,H,T,Dh}, {H*T*Dh, T*Dh, Dh, 1}};
+  state.attn_state.K = {sadv(B*H*T*Dh), {B,H,T,Dh}, {H*T*Dh, T*Dh, Dh, 1}};
+  state.attn_state.V = {sadv(B*H*T*Dh), {B,H,T,Dh}, {H*T*Dh, T*Dh, Dh, 1}};
+  state.attn_state.scores = {sadv(B*H*T*T), {B,H,T,T}, {H*T*T, T*T, T, 1}};
+  state.attn_state.probs = {sadv(B*H*T*T), {B,H,T,T}, {H*T*T, T*T, T, 1}};
+  state.attn_state.context = {sadv(B*H*T*Dh), {B,H,T,Dh}, {H*T*Dh, T*Dh, Dh, 1}};
+  state.attn_state.context_merged = {sadv(B*T*D), {B,T,D}, {T*D, D, 1}};
+
+  // Allocate input, output, dx, gradient buffers.
+  float *d_x, *d_output, *d_dx;
+  cudaMalloc(&d_x, B * T * D * sizeof(float));
+  cudaMalloc(&d_output, B * T * D * sizeof(float));
+  cudaMalloc(&d_dx, B * T * D * sizeof(float));
+
+  std::vector<float> h_x(B * T * D);
+  for (auto& v : h_x) v = dist(rng);
+  cudaMemcpy(d_x, h_x.data(), B * T * D * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  // Allocate gradient views.
+  int64_t grad_size = 2*D + 3*D*D + 3*D + D*D + D + 2*D + M*D + M + D*M + D;
+  float* grad_buf = nullptr;
+  cudaMalloc(&grad_buf, grad_size * sizeof(float));
+  cudaMemset(grad_buf, 0, grad_size * sizeof(float));
+
+  float* gp = grad_buf;
+  auto gadv = [&](int64_t n) -> float* {
+    float* p = gp; gp += n; return p;
+  };
+
+  GPTGrads::LayerGrads grads;
+  grads.d_ln1_gamma = {gadv(D), {D}, {1}};
+  grads.d_ln1_beta = {gadv(D), {D}, {1}};
+  grads.attn.dW_qkv = {gadv(3*D*D), {3*D, D}, {D, 1}};
+  grads.attn.db_qkv = {gadv(3*D), {3*D}, {1}};
+  grads.attn.dW_o = {gadv(D*D), {D, D}, {D, 1}};
+  grads.attn.db_o = {gadv(D), {D}, {1}};
+  grads.d_ln2_gamma = {gadv(D), {D}, {1}};
+  grads.d_ln2_beta = {gadv(D), {D}, {1}};
+  grads.fc1.d_weight = {gadv(M*D), {M, D}, {D, 1}};
+  grads.fc1.d_bias = {gadv(M), {M}, {1}};
+  grads.fc2.d_weight = {gadv(D*M), {D, M}, {M, 1}};
+  grads.fc2.d_bias = {gadv(D), {D}, {1}};
+
+  // Forward.
+  Tensor3D<const float> x_in{d_x, {B, T, D}, {T*D, D, 1}};
+  Tensor3D<float> output{d_output, {B, T, D}, {T*D, D, 1}};
+
+  auto fwd_status = block_forward(x_in, config, lp, output, state, stream_);
+  ASSERT_TRUE(fwd_status.ok()) << fwd_status.message();
+
+  // Backward with d_output = ones.
+  std::vector<float> h_dout(B * T * D, 1.0f);
+  cudaMemcpy(d_output, h_dout.data(), B * T * D * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  Tensor3D<const float> d_out_in{d_output, {B, T, D}, {T*D, D, 1}};
+  Tensor3D<float> dx_out{d_dx, {B, T, D}, {T*D, D, 1}};
+
+  auto bwd_status = block_backward(d_out_in, x_in, config, lp, state,
+                                     dx_out, grads, stream_);
+  ASSERT_TRUE(bwd_status.ok()) << bwd_status.message();
+
+  stream_.synchronize();
+
+  // Verify dx is finite and non-zero.
+  std::vector<float> h_dx(B * T * D);
+  cudaMemcpy(h_dx.data(), d_dx, B * T * D * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  int nonzero = 0;
+  for (auto v : h_dx) {
+    EXPECT_TRUE(std::isfinite(v));
+    if (v != 0.0f) ++nonzero;
+  }
+  EXPECT_GT(nonzero, 0) << "dx is all zeros";
+
+  // Verify all gradient buffers are finite and at least partially non-zero.
+  std::vector<float> h_grads(grad_size);
+  cudaMemcpy(h_grads.data(), grad_buf, grad_size * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  nonzero = 0;
+  for (auto v : h_grads) {
+    EXPECT_TRUE(std::isfinite(v));
+    if (v != 0.0f) ++nonzero;
+  }
+  EXPECT_GT(nonzero, grad_size / 2)
+      << "Too few non-zero gradients: " << nonzero << "/" << grad_size;
+
+  cudaFree(d_dx);
+  cudaFree(d_output);
+  cudaFree(d_x);
+  cudaFree(grad_buf);
+  cudaFree(state_buf);
+  cudaFree(param_buf);
 }
