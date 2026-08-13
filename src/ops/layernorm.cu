@@ -6,6 +6,8 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
+
 namespace gpt {
 namespace ops {
 

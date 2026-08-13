@@ -15,9 +15,11 @@ cc_library(
 cc_library(
     name = "gpt_params",
     hdrs = ["gpt_params.h"],
+    srcs = ["gpt_params.cc"],
     deps = [
         ":gpt_config",
         "//src/attention",
+        "//src/core",
         "//src/ops:layernorm",
         "//src/ops:linear",
         "//src/tensor",

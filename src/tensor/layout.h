@@ -16,6 +16,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <utility>
 
 #include "src/tensor/tensor_view.h"
 

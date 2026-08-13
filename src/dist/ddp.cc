@@ -2,6 +2,8 @@
 
 #include "src/dist/ddp.h"
 
+#include <algorithm>
+
 namespace gpt {
 namespace dist {
 

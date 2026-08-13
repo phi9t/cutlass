@@ -10,6 +10,8 @@
 
 #include <cstdint>
 
+#include <cuda_bf16.h>
+
 #include "src/core/status.h"
 #include "src/core/stream.h"
 #include "src/tensor/tensor_view.h"

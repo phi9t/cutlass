@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "src/tensor/dtype.h"
 
@@ -25,6 +26,23 @@ struct TensorView {
   T* data = nullptr;
   std::array<int64_t, Rank> shape{};
   std::array<int64_t, Rank> stride{};
+
+  // ------- const conversion -------
+
+  // Implicitly convert a mutable view to its const-element counterpart, so a
+  // Tensor2D<float> can be passed where a Tensor2D<const float> is expected.
+  // Only present when T is non-const (guards against a self-conversion). Kept
+  // as a conversion operator rather than a constructor so TensorView stays an
+  // aggregate and brace-initialization keeps working.
+  template <typename U = T,
+            typename = std::enable_if_t<!std::is_const_v<U>>>
+  operator TensorView<const T, Rank>() const {  // NOLINT(google-explicit-constructor)
+    TensorView<const T, Rank> v;
+    v.data = data;
+    v.shape = shape;
+    v.stride = stride;
+    return v;
+  }
 
   // ------- construction helpers -------
 
@@ -72,11 +90,13 @@ struct TensorView {
 
   // Return a view of a single element along the outermost dimension.
   // e.g. for [B, T, D] with Rank=3, slice(b) gives a Rank-2 view [T, D].
-  TensorView<T, Rank - 1> slice(int64_t index) const requires(Rank > 1) {
+  // Enabled only for Rank > 1 (SFINAE, since C++17 has no requires-clauses).
+  template <int R = Rank, typename = std::enable_if_t<(R > 1)>>
+  TensorView<T, R - 1> slice(int64_t index) const {
     assert(index >= 0 && index < shape[0]);
-    TensorView<T, Rank - 1> sub;
+    TensorView<T, R - 1> sub;
     sub.data = data + index * stride[0];
-    for (int i = 0; i < Rank - 1; ++i) {
+    for (int i = 0; i < R - 1; ++i) {
       sub.shape[i] = shape[i + 1];
       sub.stride[i] = stride[i + 1];
     }

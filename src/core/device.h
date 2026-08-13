@@ -7,6 +7,8 @@
 
 #include <cstdint>
 
+#include <cuda_runtime.h>
+
 #include "src/core/status.h"
 
 namespace gpt {
