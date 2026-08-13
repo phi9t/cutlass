@@ -3,6 +3,9 @@
 # Each op is a separate target:
 #   linear, embedding, layernorm, gelu, softmax, loss.
 
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
 package(default_visibility = [
     "//src:__subpackages__",
     "//tests:__subpackages__",
@@ -20,7 +23,7 @@ cc_library(
     ],
 )
 
-cc_library(
+cuda_library(
     name = "embedding",
     hdrs = ["embedding.h"],
     srcs = ["embedding.cu"],
@@ -30,9 +33,10 @@ cc_library(
         "//src/kernels:elementwise",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
-cc_library(
+cuda_library(
     name = "layernorm",
     hdrs = ["layernorm.h"],
     srcs = ["layernorm.cu"],
@@ -42,9 +46,10 @@ cc_library(
         "//src/kernels:reductions",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
-cc_library(
+cuda_library(
     name = "gelu",
     hdrs = ["gelu.h"],
     srcs = ["gelu.cu"],
@@ -53,9 +58,10 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
-cc_library(
+cuda_library(
     name = "softmax",
     hdrs = ["softmax.h"],
     srcs = ["softmax.cu"],
@@ -64,9 +70,10 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
-cc_library(
+cuda_library(
     name = "loss",
     hdrs = ["loss.h"],
     srcs = ["loss.cu"],
@@ -75,6 +82,7 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
 # ---- Tests ----

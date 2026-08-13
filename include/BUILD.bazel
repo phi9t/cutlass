@@ -1,0 +1,36 @@
+# CUTLASS / CuTe header-only library (upstream tree).
+#
+# CUTLASS is header-only and "does not need to be built to be used by other
+# projects" (README.md). This package exposes the real upstream include tree
+# (include/{cutlass,cute}) so the fork trainer under //src can #include
+# "cutlass/..." and "cute/..." with the correct include root.
+#
+# This BUILD file lives at include/ so `includes = ["."]` makes this directory
+# the header search root — matching how CUTLASS headers reference each other.
+# //third_party/cutlass:cutlass aliases this target (see ADR 0001/0002 scope:
+# Bazel only *exposes* cutlass, never *builds* it).
+
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "cutlass",
+    hdrs = glob(
+        [
+            "cutlass/**/*.h",
+            "cutlass/**/*.hpp",
+            "cutlass/**/*.inl",
+            "cute/**/*.h",
+            "cute/**/*.hpp",
+            "cute/**/*.inl",
+        ],
+        # cute/ ships only .hpp; cutlass/ has .h/.hpp/.inl. allow_empty lets the
+        # per-subtree patterns that match nothing (e.g. cute/**/*.h) pass.
+        allow_empty = True,
+    ),
+    includes = ["."],
+    deps = [
+        "//third_party/cuda:cuda_headers",
+    ],
+)

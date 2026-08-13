@@ -3,6 +3,8 @@
 # Shared test_main and test_utils are available to both
 # collocated tests in src/ and cross-cutting tests in tests/.
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 package(default_visibility = [
     "//src:__subpackages__",
     "//tests:__subpackages__",

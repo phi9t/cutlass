@@ -1,0 +1,55 @@
+"""
+GPT CUDA Trainer - Bazel 8+ / bzlmod root module.
+
+Single-node, multi-GPU GPT trainer built on CUTLASS/CuTe.
+"""
+
+module(
+    name = "gpt_cuda_trainer",
+    version = "0.1.0",
+)
+
+# ---------------------------------------------------------------------------
+# Direct dependencies
+# ---------------------------------------------------------------------------
+
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "googletest", version = "1.17.0")
+bazel_dep(name = "rules_cc", version = "0.2.22")
+bazel_dep(name = "rules_cuda", version = "0.3.0")
+
+# CUTLASS: if a native Bazel module becomes available, switch to bazel_dep.
+# Until then, import via the local extension below or a vendored BUILD layer.
+# bazel_dep(name = "cutlass", version = "3.9.0")
+
+# ---------------------------------------------------------------------------
+# CUDA compiler toolchain — rules_cuda pointed at a LOCAL toolkit (ADR 0003)
+# ---------------------------------------------------------------------------
+# An empty toolkit_path triggers rules_cuda's local auto-detection from
+# CUDA_PATH / well-known paths. Inside the bwrap rootfs (ADR 0002/0004) that
+# resolves to the single pinned CUDA 12.8 devel install — one CUDA, no
+# hermetic redist download. This provides the nvcc toolchain + cuda_library
+# rule + the @rules_cuda//cuda:archs flag that local_cuda alone lacks.
+cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
+cuda.toolkit(
+    name = "cuda",
+    toolkit_path = "",
+)
+use_repo(cuda, "cuda")
+
+# ---------------------------------------------------------------------------
+# CUDA / NCCL LIBRARY discovery — system-local via //tools/bazel:cuda_ext.bzl
+# ---------------------------------------------------------------------------
+# local_cuda/local_nccl expose cudart/cublas/cublasLt/nccl + headers from the
+# same rootfs CUDA_HOME/NCCL_HOME. Kept for libraries only; compilation is
+# rules_cuda's job (above).
+local = use_extension("//tools/bazel:cuda_ext.bzl", "cuda")
+local.local_cuda(
+    name = "local_cuda",
+    # Path auto-detected from CUDA_HOME or /usr/local/cuda by default.
+)
+local.local_nccl(
+    name = "local_nccl",
+    # Path auto-detected from NCCL_HOME or system default.
+)
+use_repo(local, "local_cuda", "local_nccl")

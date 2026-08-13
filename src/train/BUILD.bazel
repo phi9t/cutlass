@@ -1,8 +1,14 @@
 # Layer 6 — Training runtime.
 
-package(default_visibility = ["//src:__subpackages__"])
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
-cc_library(
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
+
+cuda_library(
     name = "optimizer",
     hdrs = ["optimizer.h"],
     srcs = ["optimizer.cu"],
@@ -11,6 +17,7 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
 cc_library(

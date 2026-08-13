@@ -2,6 +2,8 @@
 #
 # Non-blocking by default.  Run manually or in nightly CI.
 
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
 package(default_visibility = ["//visibility:private"])
 
 cc_test(

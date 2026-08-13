@@ -35,6 +35,13 @@ cmake .. -DCUTLASS_NVCC_ARCHS=90a -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_UNITY_BUI
 - Build and run via `make test_unit -j` from the `build/` directory.
 - No explicit coverage target is documented; add tests alongside new kernels or utilities.
 
+## Git Workflow & Landing
+- This checkout is a **fork**. Remotes: `origin` -> `https://github.com/phi9t/cutlass.git` (the fork), `upstream` -> `https://github.com/NVIDIA/cutlass.git` (NVIDIA).
+- **"Land on mainline" means commit to the local `main` branch only.** Do NOT push to `origin` (or any remote) unless the user explicitly asks to push.
+- Fork-specific work lives under `src/` (the trainer scaffold) plus a small set of additive root-level infra: `MODULE.bazel`/`.bazelrc`/`.bazelversion` (Bazel 9.2.0), `scripts/rootfs/` + `scripts/run_local_gpu_smoke.sh` (hermetic bwrap rootfs + loud GPU verifier), `tests/smoke/` (CUTLASS GEMM toolchain proof), `include/BUILD.bazel` + `third_party/cutlass/` (expose upstream CUTLASS headers to Bazel), and `CONTEXT.md`/`docs/adr/`. These are disjoint from CUTLASS's own CMake build, so they rebase cleanly onto upstream releases.
+- Hermetic local GPU check: `scripts/run_local_gpu_smoke.sh` re-execs into the rootfs and walks a loud ladder (21 preflight / 22 build / 23 GEMM smoke / 24 optional gtest). First run auto-builds the rootfs via `scripts/rootfs/build_rootfs.sh`.
+- To sync with a new upstream release: `git fetch upstream --tags`, then rebase local `main` onto the latest release tag (e.g., `git rebase 4.7.0`), replaying the fork commits on top.
+
 ## Commit & Pull Request Guidelines
 - Recent history favors short, imperative subjects, sometimes with a scope tag (e.g., `[SM90] ...`) or `fix:` prefix.
 - Include a PR or issue reference when applicable (e.g., `(#2219)`).

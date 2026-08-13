@@ -1,5 +1,7 @@
 # Layer 5 — Transformer block + GPT model.
 
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
 package(default_visibility = [
     "//src:__subpackages__",
     "//tests:__subpackages__",

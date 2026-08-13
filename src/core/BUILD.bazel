@@ -3,7 +3,12 @@
 # Provides status/error handling, device guards, stream/event wrappers,
 # and GPU memory allocators.  No math, no tensor semantics.
 
-package(default_visibility = ["//src:__subpackages__"])
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
 
 cc_library(
     name = "core",

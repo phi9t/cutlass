@@ -2,6 +2,8 @@
 #
 # Cross-layer tests that verify composed behavior.
 
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
 package(default_visibility = ["//visibility:private"])
 
 cc_test(

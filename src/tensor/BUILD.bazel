@@ -3,7 +3,12 @@
 # dtype, TensorView, layout/reshape utilities.
 # Header-only; no CUDA runtime dependency.
 
-package(default_visibility = ["//src:__subpackages__"])
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
 
 cc_library(
     name = "tensor",

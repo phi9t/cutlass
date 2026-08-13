@@ -1,6 +1,11 @@
 # Layer 6 — Distributed: NCCL context and DDP.
 
-package(default_visibility = ["//src:__subpackages__"])
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
 
 cc_library(
     name = "nccl_context",

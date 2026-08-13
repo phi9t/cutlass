@@ -1,11 +1,14 @@
 # Layer 4 — Attention subsystem.
 
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
 package(default_visibility = [
     "//src:__subpackages__",
     "//tests:__subpackages__",
 ])
 
-cc_library(
+cuda_library(
     name = "attention",
     hdrs = ["attention.h"],
     srcs = [
@@ -22,6 +25,7 @@ cc_library(
         "//src/ops:softmax",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
 # ---- Tests ----

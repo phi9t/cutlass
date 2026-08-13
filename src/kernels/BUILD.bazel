@@ -3,9 +3,15 @@
 # GEMM, reductions, elementwise ops, layout transforms.
 # Each sub-family is a separate target to keep dependencies narrow.
 
-package(default_visibility = ["//src:__subpackages__"])
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
-cc_library(
+package(default_visibility = [
+    "//src:__subpackages__",
+    "//tests:__subpackages__",
+])
+
+cuda_library(
     name = "gemm",
     hdrs = ["gemm.h"],
     srcs = [
@@ -19,9 +25,10 @@ cc_library(
         "//third_party/cuda:cublaslt",
         "//third_party/cutlass",
     ],
+    tags = ["cuda"],
 )
 
-cc_library(
+cuda_library(
     name = "reductions",
     hdrs = ["reductions.h"],
     srcs = ["reductions.cu"],
@@ -30,9 +37,10 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
-cc_library(
+cuda_library(
     name = "elementwise",
     hdrs = ["elementwise.h"],
     srcs = ["elementwise.cu"],
@@ -41,9 +49,10 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
-cc_library(
+cuda_library(
     name = "layout_kernels",
     hdrs = ["layout_kernels.h"],
     srcs = ["layout_kernels.cu"],
@@ -52,6 +61,7 @@ cc_library(
         "//src/tensor",
         "//third_party/cuda:cudart",
     ],
+    tags = ["cuda"],
 )
 
 # ---- Tests ----

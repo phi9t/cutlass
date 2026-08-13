@@ -1,0 +1,96 @@
+# =============================================================================
+# GPT CUDA Trainer — Bazel configuration
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Common
+# ---------------------------------------------------------------------------
+build --cxxopt=-std=c++20
+build --host_cxxopt=-std=c++20
+build --copt=-Wall
+build --copt=-Wextra
+build --copt=-Wno-unused-parameter
+
+# Sandboxed spawns for compile/link/genrule actions (nccl pattern). On Bazel 9
+# --incompatible_sandbox_hermetic_tmp is on by default, which also sidesteps
+# the known nvcc /tmp PID-collision issue under the sandbox.
+build --spawn_strategy=sandboxed
+
+# Bazel 9 removed native cc_* rules; external deps (e.g. googletest) that still
+# call them unqualified need the autoload bridge. Our own BUILD files load()
+# explicitly; this only rescues third-party repos we don't control.
+build --incompatible_autoload_externally=+cc_library,+cc_test,+cc_binary,+cc_import
+
+# ---------------------------------------------------------------------------
+# CUDA flag aliases (rules_cuda) — short names for the long flag labels
+# ---------------------------------------------------------------------------
+build --flag_alias=cuda_archs=@rules_cuda//cuda:archs
+build --flag_alias=cuda_compiler=@rules_cuda//cuda:compiler
+build --flag_alias=cuda_enable=@rules_cuda//cuda:enable
+
+# ---------------------------------------------------------------------------
+# CUDA off by default — CPU-only hosts/CI build the non-GPU targets.
+# GPU targets are tagged "cuda"/"gpu"; the filters skip them until
+# --config=cuda flips them open (nccl pattern).
+# ---------------------------------------------------------------------------
+build --build_tag_filters=-cuda,-gpu
+test --test_tag_filters=-cuda,-gpu
+
+# ---------------------------------------------------------------------------
+# Debug
+# ---------------------------------------------------------------------------
+build:dbg --compilation_mode=dbg
+build:dbg --copt=-O0
+build:dbg --copt=-g
+build:dbg --strip=never
+
+# ---------------------------------------------------------------------------
+# Optimized
+# ---------------------------------------------------------------------------
+build:opt --compilation_mode=opt
+build:opt --copt=-O3
+build:opt --copt=-DNDEBUG
+
+# ---------------------------------------------------------------------------
+# Sanitizers (host-only — do not combine with GPU runtime code)
+# ---------------------------------------------------------------------------
+build:asan --strip=never
+build:asan --copt=-fsanitize=address
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --linkopt=-fsanitize=address
+
+build:tsan --strip=never
+build:tsan --copt=-fsanitize=thread
+build:tsan --linkopt=-fsanitize=thread
+
+# ---------------------------------------------------------------------------
+# CUDA enable + architecture targets
+# ---------------------------------------------------------------------------
+# --config=cuda: flip the tag filters open, enable rules_cuda + nvcc, and
+# default to Blackwell (the local B200s are compute capability 10.0 -> sm_100).
+build:cuda --build_tag_filters=
+build:cuda --test_tag_filters=
+build:cuda --@rules_cuda//cuda:enable=True
+build:cuda --@rules_cuda//cuda:compiler=nvcc
+build:cuda --@rules_cuda//cuda:archs=compute_100:compute_100,sm_100
+
+# Per-arch overrides — layer AFTER --config=cuda, e.g. `--config=cuda
+# --config=cuda_hopper`. The `a` suffix (arch-accelerated) matters for
+# Hopper/Blackwell perf.
+build:cuda_blackwell --@rules_cuda//cuda:archs=compute_100:compute_100,sm_100,sm_100a
+build:cuda_hopper    --@rules_cuda//cuda:archs=compute_90:compute_90,sm_90,sm_90a
+build:cuda_ampere    --@rules_cuda//cuda:archs=compute_80:compute_80,sm_80,sm_86
+build:cuda_ada       --@rules_cuda//cuda:archs=compute_89:compute_89,sm_89
+
+# ---------------------------------------------------------------------------
+# Profiling
+# ---------------------------------------------------------------------------
+build:profile --copt=-O2
+build:profile --copt=-g
+build:profile --copt=-DPROFILE_BUILD
+
+# ---------------------------------------------------------------------------
+# Test defaults
+# ---------------------------------------------------------------------------
+test --test_output=errors
+test --test_verbose_timeout_warnings

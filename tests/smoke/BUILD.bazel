@@ -1,0 +1,23 @@
+# Infra smoke tests — toolchain proofs, NOT fork feature work.
+#
+# These targets depend only on the real upstream CUTLASS headers
+# (//include:cutlass) and the CUDA runtime, so they verify the hermetic rootfs
+# nvcc toolchain end to end (compile CUTLASS device code for the local arch,
+# link cudart, run correctly on one GPU) without touching the //src scaffold.
+# They are cuda-tagged so the default CPU build (--build_tag_filters=-cuda)
+# skips them; the verifier ladder builds/runs them under --config=cuda inside
+# the rootfs (ADR 0002/0005).
+
+load("@rules_cuda//cuda:defs.bzl", "cuda_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+cuda_binary(
+    name = "cutlass_gemm_smoke",
+    srcs = ["cutlass_gemm_smoke.cu"],
+    deps = [
+        "//include:cutlass",
+        "//third_party/cuda:cudart",
+    ],
+    tags = ["cuda"],
+)

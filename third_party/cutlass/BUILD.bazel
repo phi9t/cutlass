@@ -1,23 +1,14 @@
 # Third-party CUTLASS wrapper.
 #
-# CUTLASS is header-only. This target exposes the include tree for
-# in-tree GEMM kernels and any future CuTe-based layout work.
-#
-# If CUTLASS is vendored into //third_party/cutlass/include/, point
-# hdrs/includes there. If imported as a Bazel module, replace with
-# an alias to the module target.
+# CUTLASS is header-only and lives in the upstream tree at repo-root include/.
+# This target is a stable alias so fork code depends on
+# //third_party/cutlass:cutlass regardless of where the header tree sits; the
+# real header cc_library is //include:cutlass. See ADR 0001/0002 — Bazel only
+# exposes cutlass, never builds it, so this stays rebase-clean against upstream.
 
 package(default_visibility = ["//visibility:public"])
 
-cc_library(
+alias(
     name = "cutlass",
-    hdrs = glob([
-        "include/**/*.h",
-        "include/**/*.hpp",
-        "include/**/*.cuh",
-    ]),
-    includes = ["include"],
-    deps = [
-        "//third_party/cuda:cuda_headers",
-    ],
+    actual = "//include:cutlass",
 )

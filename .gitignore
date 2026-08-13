@@ -2,3 +2,13 @@
 __pycache__/
 cutlass_library.egg-info/
 /build*
+
+# Bazel (fork infra): convenience symlinks and generated output trees.
+/bazel-*
+
+# Hermetic bwrap rootfs export (built by scripts/rootfs/build_rootfs.sh) and
+# any per-run venv. Large, machine-local, and reproducible — never committed.
+/scripts/rootfs/rootfs
+/scripts/rootfs/rootfs-*
+/scripts/rootfs/.rootfs.stage.*
+/.venv-rootfs
