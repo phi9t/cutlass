@@ -86,6 +86,10 @@ ok "preflight: PASS"
 SMOKE_TGT="//tests/smoke:cutlass_gemm_smoke"
 
 log "build: bazel build --config=cuda $SMOKE_TGT"
+# We are past the CUTLASS_IN_ROOTFS guard above, so the build-level rootfs guard
+# (//tools/bazel:rootfs_guard, ADR 0006) will pass here. If this script is ever
+# invoked with the marker set but outside a real rootfs, that guard is the
+# belt-and-suspenders backstop that still fails the CUDA build loudly.
 bazel build --config=cuda "${BAZEL_EXTRA[@]}" "$SMOKE_TGT" \
   || die 22 "hermetic CUDA build of the GEMM smoke failed"
 ok "build: PASS"

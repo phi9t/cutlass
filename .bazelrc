@@ -74,6 +74,12 @@ build:cuda --@rules_cuda//cuda:enable=True
 build:cuda --@rules_cuda//cuda:compiler=nvcc
 build:cuda --@rules_cuda//cuda:archs=compute_100:compute_100,sm_100
 
+# Rootfs guard (ADR 0006): forward the sandbox marker and the expert escape
+# hatch into build actions so //tools/bazel:rootfs_guard can enforce that CUDA
+# builds run inside the bwrap rootfs (hard-fail otherwise).
+build:cuda --action_env=CUTLASS_IN_ROOTFS
+build:cuda --action_env=CUTLASS_ALLOW_HOST_CUDA
+
 # Per-arch overrides — layer AFTER --config=cuda, e.g. `--config=cuda
 # --config=cuda_hopper`. The `a` suffix (arch-accelerated) matters for
 # Hopper/Blackwell perf.

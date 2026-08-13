@@ -39,6 +39,13 @@
   `sm_100` to prove nvcc + cutlass headers + driver link end-to-end, before any
   multi-GPU test. The 8-GPU capacity run is a later rung, not the gate.
 
+- **Rootfs guard** — the build-level enforcement that makes "CUDA work runs inside the
+  Rootfs" a *build* invariant, not a convention. A `//tools/bazel:rootfs_guard` action,
+  pulled in transitively by `//third_party/cuda:cudart` only when CUDA is enabled,
+  hard-fails any `--config=cuda` build that runs without `CUTLASS_IN_ROOTFS=1` and prints
+  how to enter the Rootfs. It cannot be skipped by targeting a specific label. Escape
+  hatch: `CUTLASS_ALLOW_HOST_CUDA=1` (deliberate, visible host override). See ADR 0006.
+
 - **Land on mainline** — commit to the local `main` branch only; never push to any
   remote (see `AGENTS.md`).
 

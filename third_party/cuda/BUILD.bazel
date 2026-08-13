@@ -3,6 +3,15 @@
 # This BUILD file re-exports targets from the local_cuda repository
 # discovered by //tools/bazel:cuda_ext.bzl, providing a stable label
 # for in-tree code to depend on.
+#
+# :cudart is the single chokepoint every CUDA target in the repo depends on, so
+# it is a cc_library (not a bare alias) that additionally pulls in the rootfs
+# guard when CUDA is enabled (ADR 0006). That makes "CUDA builds run inside the
+# bwrap rootfs" a build invariant that cannot be skipped by targeting a specific
+# label. The guard is select()ed on so the CPU header-only subset (CUDA
+# disabled) never depends on it.
+
+load("@rules_cc//cc:defs.bzl", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -11,9 +20,14 @@ alias(
     actual = "@local_cuda//:cuda_headers",
 )
 
-alias(
+cc_library(
     name = "cudart",
-    actual = "@local_cuda//:cudart",
+    deps = [
+        "@local_cuda//:cudart",
+    ] + select({
+        "//tools/bazel:cuda_enabled": ["//tools/bazel:rootfs_guard"],
+        "//conditions:default": [],
+    }),
 )
 
 alias(
