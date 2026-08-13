@@ -10,7 +10,8 @@
 #
 # Unlike monarch's rootfs, this one has NO Python/torch/uv/Rust: the fork trainer
 # is C++/CUTLASS. It carries a devel CUDA (so CUDA_HOME points at /usr/local/cuda)
-# plus Bazel, git, and the build essentials.
+# plus NCCL (from the devel base, for the multi-GPU //src/dist targets), Bazel,
+# git, and the build essentials.
 #
 # Usage:
 #   scripts/rootfs/build_rootfs.sh [options]
@@ -108,6 +109,18 @@ RUN test -x /usr/local/cuda/bin/nvcc || { echo "nvcc missing in devel base" >&2;
     /usr/local/cuda/bin/nvcc --version
 ENV CUDA_HOME=/usr/local/cuda CUDA_PATH=/usr/local/cuda
 ENV PATH=/usr/local/cuda/bin:$PATH
+
+# NCCL: the CUDA 12.8 devel base already ships libnccl-dev (nccl.h in
+# /usr/include, libnccl.so in the multiarch /usr/lib/x86_64-linux-gnu). The
+# fork's local_nccl extension expects NCCL_HOME/lib/libnccl.so with NCCL_HOME=/usr,
+# so bridge the multiarch layout into /usr/lib. Header already resolves under
+# /usr/include (ADR 0004). Fail loudly if the base ever drops NCCL.
+RUN test -f /usr/include/nccl.h || { echo "nccl.h missing in devel base" >&2; exit 1; } && \
+    test -e /usr/lib/x86_64-linux-gnu/libnccl.so || { echo "libnccl.so missing in devel base" >&2; exit 1; } && \
+    ln -sf /usr/lib/x86_64-linux-gnu/libnccl.so /usr/lib/libnccl.so && \
+    ln -sf /usr/lib/x86_64-linux-gnu/libnccl.so.2 /usr/lib/libnccl.so.2 && \
+    test -e /usr/lib/libnccl.so
+ENV NCCL_HOME=/usr
 DOCKERFILE
 fi
 

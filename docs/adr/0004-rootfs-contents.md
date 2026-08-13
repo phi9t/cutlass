@@ -22,6 +22,14 @@ set (nvidia0..7, nvidiactl, nvidia-uvm, nvidia-uvm-tools, nvidia-modeset, nvidia
 - **Base image**: `nvidia/cuda:12.8.x-devel-ubuntu22.04`, pinned by digest. A *devel*
   image ships a real `nvcc` and a C++17 host toolchain directly — no synthetic-from-wheels
   step. **No Python / torch / uv** in the rootfs.
+- **NCCL**: the devel base already ships `libnccl-dev` (version-locked to the toolkit,
+  `2.25.1-1+cuda12.8`), so no extra apt package is needed. But it installs `nccl.h` into
+  `/usr/include` and `libnccl.so` into the multiarch `/usr/lib/x86_64-linux-gnu`, whereas
+  the fork's `local_nccl` Bazel extension expects `NCCL_HOME/lib/libnccl.so` with
+  `NCCL_HOME=/usr`. The rootfs bridges this at build time by symlinking
+  `/usr/lib/libnccl.so{,.2}` → the multiarch copies (failing loudly if the base ever drops
+  NCCL), and sets `NCCL_HOME=/usr`. This lets the multi-GPU `//src/dist` targets link
+  without a separate NCCL install.
 - **Driver bind-in** (monarch pattern, read-only): host `libcuda.so*`, `libnvidia-*.so*`,
   `nvidia-smi`, and all `/dev/nvidia*` device nodes, so the in-rootfs 12.8 runtime links
   the matching host 580.105.08 driver userspace. Also bind host `/etc/resolv.conf` +

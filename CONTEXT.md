@@ -15,12 +15,12 @@
   fork trainer as a header `cc_library`. Stays on its own CMake build untouched.
 
 - **Rootfs** — a bwrap-run flattened Ubuntu userland from a pinned CUDA 12.8 *devel*
-  image (real nvcc + C++17 host toolchain, **no Python**). Supplies the toolchain the
-  host lacks plus the matching host-driver userspace (`libcuda.so*`, `libnvidia-*.so*`,
-  `nvidia-smi`) and `/dev/nvidia*` device nodes bound in read-only. The **outer isolation
-  boundary**: Bazel runs *inside* it, so build and GPU-run share one environment.
-  Re-exec marker `CUTLASS_IN_ROOTFS=1`. See ADR 0002, 0004. (Contrast: nccl has no
-  rootfs.)
+  image (real nvcc + C++17 host toolchain + version-locked NCCL, **no Python**). Supplies
+  the toolchain the host lacks plus the matching host-driver userspace (`libcuda.so*`,
+  `libnvidia-*.so*`, `nvidia-smi`) and `/dev/nvidia*` device nodes bound in read-only. The
+  **outer isolation boundary**: Bazel runs *inside* it, so build and GPU-run share one
+  environment. Re-exec marker `CUTLASS_IN_ROOTFS=1`; `NCCL_HOME=/usr`. See ADR 0002, 0004.
+  (Contrast: nccl has no rootfs.)
 
 - **Local run** — single-host execution that exercises the real GPU runtime path
   (build → on-device smoke → tests) inside the rootfs, driven by a loud-preflight

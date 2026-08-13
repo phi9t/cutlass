@@ -95,6 +95,7 @@ bwrap_args+=(
   --setenv PATH "/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin"
   --setenv CUDA_HOME /usr/local/cuda
   --setenv CUDA_PATH /usr/local/cuda
+  --setenv NCCL_HOME /usr
   --setenv LD_LIBRARY_PATH "$HOST_LIBDIR:/usr/local/cuda/lib64"
   --setenv CUTLASS_IN_ROOTFS 1
   --setenv HOME /root
