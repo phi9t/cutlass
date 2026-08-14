@@ -32,6 +32,15 @@ __global__ void vec_scale_kernel(const float* __restrict__ x, float alpha,
   if (i < n) out[i] = alpha * x[i];
 }
 
+// Broadcast a [cols] bias over a row-major [rows, cols] buffer, in place.
+__global__ void bias_add_kernel(float* __restrict__ out,
+                                const float* __restrict__ bias,
+                                int64_t rows, int64_t cols) {
+  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t total = rows * cols;
+  if (i < total) out[i] += bias[i % cols];
+}
+
 __global__ void vec_exp_kernel(const float* __restrict__ x,
                                float* __restrict__ out, int64_t n) {
   int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -99,6 +108,20 @@ Status vec_scale_f32(Tensor1D<const float> x, float alpha,
   int grid = static_cast<int>((n + kBlockSize - 1) / kBlockSize);
   vec_scale_kernel<<<grid, kBlockSize, 0, stream.get()>>>(
       x.data, alpha, out.data, n);
+  return Status::Ok();
+}
+
+Status bias_add_f32(Tensor2D<float> out, Tensor1D<const float> bias,
+                    const CudaStream& stream) {
+  int64_t rows = out.shape[0];
+  int64_t cols = out.shape[1];
+  if (bias.shape[0] != cols) {
+    return Status(StatusCode::kInvalidArgument, "bias_add shape mismatch");
+  }
+  int64_t total = rows * cols;
+  int grid = static_cast<int>((total + kBlockSize - 1) / kBlockSize);
+  bias_add_kernel<<<grid, kBlockSize, 0, stream.get()>>>(
+      out.data, bias.data, rows, cols);
   return Status::Ok();
 }
 

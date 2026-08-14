@@ -20,6 +20,15 @@ Status vec_add_f32(Tensor1D<const float> a, Tensor1D<const float> b,
                    Tensor1D<float> out, const CudaStream& stream);
 
 // ---------------------------------------------------------------------------
+// Bias broadcast-add (in place):  out[i, j] += bias[j]
+//   out:  [rows, cols]  (row-major contiguous)
+//   bias: [cols]
+// Adds a per-column bias vector broadcast over every row.
+// ---------------------------------------------------------------------------
+Status bias_add_f32(Tensor2D<float> out, Tensor1D<const float> bias,
+                    const CudaStream& stream);
+
+// ---------------------------------------------------------------------------
 // Elementwise mul:  out[i] = a[i] * b[i]
 // ---------------------------------------------------------------------------
 Status vec_mul_f32(Tensor1D<const float> a, Tensor1D<const float> b,
