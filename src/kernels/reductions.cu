@@ -42,6 +42,19 @@ __global__ void row_sum_kernel(const float* __restrict__ input,
   output[row] = val;
 }
 
+__global__ void col_sum_kernel(const float* __restrict__ input,
+                               float* __restrict__ output,
+                               int64_t rows, int64_t cols) {
+  int64_t col = blockIdx.x * blockDim.x + threadIdx.x;
+  if (col >= cols) return;
+
+  float val = 0.0f;
+  for (int64_t row = 0; row < rows; ++row) {
+    val += input[row * cols + col];
+  }
+  output[col] = val;
+}
+
 __global__ void row_mean_kernel(const float* __restrict__ input,
                                 float* __restrict__ output,
                                 int64_t rows, int64_t cols) {
@@ -136,6 +149,19 @@ Status row_sum_f32(Tensor2D<const float> input, Tensor1D<float> output,
   }
   int grid = static_cast<int>((rows + kBlockSize - 1) / kBlockSize);
   row_sum_kernel<<<grid, kBlockSize, 0, stream.get()>>>(
+      input.data, output.data, rows, cols);
+  return Status::Ok();
+}
+
+Status col_sum_f32(Tensor2D<const float> input, Tensor1D<float> output,
+                   const CudaStream& stream) {
+  int64_t rows = input.shape[0];
+  int64_t cols = input.shape[1];
+  if (output.shape[0] != cols) {
+    return Status(StatusCode::kInvalidArgument, "col_sum output shape mismatch");
+  }
+  int grid = static_cast<int>((cols + kBlockSize - 1) / kBlockSize);
+  col_sum_kernel<<<grid, kBlockSize, 0, stream.get()>>>(
       input.data, output.data, rows, cols);
   return Status::Ok();
 }

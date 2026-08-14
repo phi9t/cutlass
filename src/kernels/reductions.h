@@ -29,6 +29,13 @@ Status row_sum_f32(Tensor2D<const float> input, Tensor1D<float> output,
                    const CudaStream& stream);
 
 // ---------------------------------------------------------------------------
+// Column-wise sum:  out[j] = sum_i(input[i, j])
+// ---------------------------------------------------------------------------
+
+Status col_sum_f32(Tensor2D<const float> input, Tensor1D<float> output,
+                   const CudaStream& stream);
+
+// ---------------------------------------------------------------------------
 // Row-wise mean:  out[i] = mean_j(input[i, j])
 // ---------------------------------------------------------------------------
 

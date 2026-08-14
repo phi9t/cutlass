@@ -60,7 +60,6 @@ Status linear_backward(Tensor2D<const float> X,
                        LinearGrads& grads,
                        const CudaStream& stream) {
   int64_t N = X.shape[0];
-  int64_t D_in = X.shape[1];
   int64_t D_out = params.weight.shape[0];
 
   // dX = dY @ W      (dY: [N, D_out], W: [D_out, D_in] → dX: [N, D_in])
@@ -78,8 +77,10 @@ Status linear_backward(Tensor2D<const float> X,
   GPT_RETURN_IF_ERROR(
       kernels::gemm_f32(dY_T, X_mut, grads.d_weight, 1.0f, 0.0f, stream));
 
-  // db = col_sum(dY) = row_sum(dY^T)
-  // TODO: Implement column-wise reduction or transpose + row_sum for db.
+  // db = col_sum(dY)
+  if (grads.d_bias.data != nullptr) {
+    GPT_RETURN_IF_ERROR(kernels::col_sum_f32(dY, grads.d_bias, stream));
+  }
 
   return Status::Ok();
 }

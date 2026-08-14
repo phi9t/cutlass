@@ -1,4 +1,43 @@
-# Handoff — Wire the CUTLASS fp32 GEMM (turn the last 3 scaffold tests green)
+# Handoff — CUTLASS fp32 GEMM completion and next scaffold frontier
+
+## Status
+
+Completed on local `main`:
+- `a753d47a` — wired CUTLASS fp32 `gemm_f32` / `batched_gemm_f32` and linear
+  bias add.
+- `f3b9ac2e` — completed the causal attention forward path by making
+  `split_heads_f32` honor strided Q/K/V views and applying the existing fused
+  scale+causal-mask kernel.
+
+Verification, inside the hermetic rootfs on the B200:
+- `scripts/run_local_gpu_smoke.sh --with-gtest` -> **PASS**
+- preflight PASS, CUTLASS GEMM smoke PASS, gpu-tagged `//src/...` gtest rung
+  **15 / 15 PASS**
+
+This file is now a completion record plus context for the next scaffold work.
+
+## Additional completed slice
+
+After the 15/15 forward-path milestone, the next small correctness hole was
+closed test-first:
+- `src/ops/linear_test.cc` now asserts `d_bias` in both backward GPU cases.
+- `src/kernels/reductions.{h,cu}` adds `col_sum_f32`.
+- `src/ops/linear.cc::linear_backward` computes `db = col_sum(dY)` when a
+  `d_bias` buffer is present.
+
+## Next recommended scaffold frontier
+
+Full attention backward and GPT backward remain larger follow-on work:
+- `src/attention/attention.cc::attention_backward` returns `kNotImplemented`.
+- `src/model/gpt_block.cc::block_backward` returns `kNotImplemented`.
+- `src/model/gpt_model.cc::gpt_backward` returns `kNotImplemented`.
+
+Keep landing local-only unless explicitly told to push.
+
+---
+
+Historical handoff below documents the original GEMM task and the layout
+pitfalls that were resolved.
 
 ## Context / where we are
 
@@ -9,7 +48,7 @@ The cutlass **fork** infra is done and landed on local `main`:
   `77b87ba4`): C++20 `requires` removed, missing includes added, const-view
   conversion added, `init_gpt_params/grads` defined.
 
-Current state, verified inside the rootfs on the B200:
+Original pre-implementation state, verified inside the rootfs on the B200:
 - `bazel build --config=cuda //src/...` → **succeeds**.
 - gtest rung: **12 / 15** gpu-tagged targets pass.
 - The **3 failing** targets — `//src/ops:linear_test`,

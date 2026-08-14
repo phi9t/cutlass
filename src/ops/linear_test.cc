@@ -211,6 +211,11 @@ TEST_F(LinearTest, BackwardDXMatchesCPU) {
   cudaMemcpy(h_dW.data(), d_dW, D_out * D_in * sizeof(float), cudaMemcpyDeviceToHost);
   EXPECT_TRUE(test::vectors_near(h_dW, ref.dW, 1e-4f, 1e-3f)) << "dW mismatch";
 
+  // Read db.
+  std::vector<float> h_db(D_out);
+  cudaMemcpy(h_db.data(), d_db, D_out * sizeof(float), cudaMemcpyDeviceToHost);
+  EXPECT_TRUE(test::vectors_near(h_db, ref.db, 1e-4f, 1e-3f)) << "db mismatch";
+
   cudaFree(d_X); cudaFree(d_W); cudaFree(d_dY);
   cudaFree(d_dX); cudaFree(d_dW); cudaFree(d_db);
 }
@@ -252,14 +257,16 @@ TEST_F(LinearTest, BackwardRandomInputsCPUReference) {
   ASSERT_TRUE(linear_backward(X, dY, params, dX, grads, stream_).ok());
   stream_.synchronize();
 
-  std::vector<float> h_dX(N * D_in), h_dW(D_out * D_in);
+  std::vector<float> h_dX(N * D_in), h_dW(D_out * D_in), h_db(D_out);
   cudaMemcpy(h_dX.data(), d_dX, N * D_in * sizeof(float), cudaMemcpyDeviceToHost);
   cudaMemcpy(h_dW.data(), d_dW, D_out * D_in * sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_db.data(), d_db, D_out * sizeof(float), cudaMemcpyDeviceToHost);
 
   auto ref = test::cpu_linear_backward(h_X.data(), h_dY.data(), h_W.data(),
                                         N, D_in, D_out);
   EXPECT_TRUE(test::vectors_near(h_dX, ref.dX, 1e-3f, 1e-2f)) << "dX mismatch";
   EXPECT_TRUE(test::vectors_near(h_dW, ref.dW, 1e-3f, 1e-2f)) << "dW mismatch";
+  EXPECT_TRUE(test::vectors_near(h_db, ref.db, 1e-3f, 1e-2f)) << "db mismatch";
 
   cudaFree(d_X); cudaFree(d_W); cudaFree(d_dY);
   cudaFree(d_dX); cudaFree(d_dW); cudaFree(d_db);
