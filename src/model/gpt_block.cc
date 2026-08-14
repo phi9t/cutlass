@@ -3,6 +3,7 @@
 #include "src/model/gpt_block.h"
 
 #include "src/attention/attention.h"
+#include "src/kernels/elementwise.h"
 #include "src/ops/gelu.h"
 #include "src/ops/layernorm.h"
 #include "src/ops/linear.h"
@@ -47,12 +48,13 @@ Status block_forward(Tensor3D<const float> x,
   }
 
   // Residual add: output = x + attn_out.
-  // TODO: Use vec_add kernel over flat buffer.
-  // For now, mark the intent.
   {
     int64_t n = B * T * D;
-    // output.data[i] = x.data[i] + state.attn_out.data[i]  for i in [0, n)
-    // Placeholder — needs elementwise add kernel call.
+    Tensor1D<const float> x_flat{x.data, {n}, {1}};
+    Tensor1D<const float> attn_flat{state.attn_out.data, {n}, {1}};
+    Tensor1D<float> output_flat{output.data, {n}, {1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::vec_add_f32(x_flat, attn_flat, output_flat, stream));
   }
 
   // ---- Sub-block 2: LayerNorm → MLP → Residual ----
@@ -93,7 +95,14 @@ Status block_forward(Tensor3D<const float> x,
   }
 
   // Residual add: output = output + fc2_out.
-  // TODO: Use vec_add kernel.
+  {
+    int64_t n = B * T * D;
+    Tensor1D<const float> output_flat{output.data, {n}, {1}};
+    Tensor1D<const float> fc2_flat{state.fc2_out.data, {n}, {1}};
+    Tensor1D<float> out_flat{output.data, {n}, {1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::vec_add_f32(output_flat, fc2_flat, out_flat, stream));
+  }
 
   return Status::Ok();
 }

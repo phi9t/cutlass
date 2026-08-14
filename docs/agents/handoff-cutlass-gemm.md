@@ -24,6 +24,9 @@ closed test-first:
 - `src/kernels/reductions.{h,cu}` adds `col_sum_f32`.
 - `src/ops/linear.cc::linear_backward` computes `db = col_sum(dY)` when a
   `d_bias` buffer is present.
+- `src/model/gpt_block.cc::block_forward` now performs both residual adds via
+  `kernels::vec_add_f32`, and `src/model/gpt_block_test.cc` compares the GPU
+  block output against a CPU reference instead of only checking finiteness.
 
 ## Next recommended scaffold frontier
 

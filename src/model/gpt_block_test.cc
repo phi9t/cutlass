@@ -216,7 +216,7 @@ TEST_F(GPTBlockGPUTest, ForwardCompiles) {
   ASSERT_TRUE(status.ok()) << status.message();
   stream_.synchronize();
 
-  // Read output and verify it's finite.
+  // Read output and verify it matches the CPU block reference.
   std::vector<float> h_output(B * T * D);
   cudaMemcpy(h_output.data(), d_output, B * T * D * sizeof(float),
              cudaMemcpyDeviceToHost);
@@ -225,6 +225,36 @@ TEST_F(GPTBlockGPUTest, ForwardCompiles) {
     EXPECT_TRUE(std::isfinite(h_output[i]))
         << "non-finite output at index " << i;
   }
+
+  auto ln1 = test::cpu_layernorm_forward(
+      h_x.data(), h_gamma1.data(), h_beta1.data(), config.layernorm_eps,
+      B * T, D);
+  auto attn = test::cpu_attention_forward(
+      ln1.y.data(), h_W_qkv.data(), h_b_qkv.data(), h_W_o.data(), h_b_o.data(),
+      B, T, D, H, /*causal=*/true, /*use_bias=*/true);
+  std::vector<float> residual1(B * T * D);
+  for (int64_t i = 0; i < B * T * D; ++i) {
+    residual1[i] = h_x[i] + attn.output[i];
+  }
+  auto ln2 = test::cpu_layernorm_forward(
+      residual1.data(), h_gamma2.data(), h_beta2.data(), config.layernorm_eps,
+      B * T, D);
+  auto fc1 = test::cpu_linear_forward(
+      ln2.y.data(), h_fc1_w.data(), h_fc1_b.data(),
+      B * T, D, mlp_hidden, /*use_bias=*/true);
+  std::vector<float> gelu(B * T * mlp_hidden);
+  for (int64_t i = 0; i < B * T * mlp_hidden; ++i) {
+    gelu[i] = test::cpu_gelu(fc1[i]);
+  }
+  auto fc2 = test::cpu_linear_forward(
+      gelu.data(), h_fc2_w.data(), h_fc2_b.data(),
+      B * T, mlp_hidden, D, /*use_bias=*/true);
+  std::vector<float> expected(B * T * D);
+  for (int64_t i = 0; i < B * T * D; ++i) {
+    expected[i] = residual1[i] + fc2[i];
+  }
+  EXPECT_TRUE(test::vectors_near(h_output, expected, 1e-3f, 1e-2f))
+      << "block forward output mismatch";
 
   // Cleanup.
   cudaFree(d_x); cudaFree(d_output);
