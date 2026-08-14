@@ -139,6 +139,93 @@ class GPTModelGPUTest : public ::testing::Test {
   CudaStream stream_;
 };
 
+TEST_F(GPTModelGPUTest, ForwardZeroLayerMatchesCPUReference) {
+  const int64_t B = 1, T = 3, D = 4, vocab = 8;
+
+  GPTConfig config;
+  config.vocab_size = vocab;
+  config.max_seq_len = T;
+  config.n_layers = 0;
+  config.n_heads = 2;
+  config.d_model = D;
+  config.mlp_hidden = 8;
+  config.use_bias = true;
+  config.tie_embeddings = true;
+  config.layernorm_eps = 1e-5f;
+
+  test::SimpleRng rng(42);
+  std::vector<int32_t> h_ids = {1, 3, 5};
+  std::vector<float> h_tok(vocab * D), h_pos(T * D);
+  std::vector<float> h_gamma(D, 1.0f), h_beta(D, 0.0f);
+  rng.fill(h_tok, 0.5f);
+  rng.fill(h_pos, 0.5f);
+
+  int32_t* d_ids = nullptr;
+  float *d_tok = nullptr, *d_pos = nullptr, *d_gamma = nullptr, *d_beta = nullptr;
+  float *d_embed = nullptr, *d_mean = nullptr, *d_inv = nullptr;
+  float *d_final = nullptr, *d_logits = nullptr;
+  cudaMalloc(&d_ids, B * T * sizeof(int32_t));
+  cudaMalloc(&d_tok, vocab * D * sizeof(float));
+  cudaMalloc(&d_pos, T * D * sizeof(float));
+  cudaMalloc(&d_gamma, D * sizeof(float));
+  cudaMalloc(&d_beta, D * sizeof(float));
+  cudaMalloc(&d_embed, B * T * D * sizeof(float));
+  cudaMalloc(&d_mean, B * T * sizeof(float));
+  cudaMalloc(&d_inv, B * T * sizeof(float));
+  cudaMalloc(&d_final, B * T * D * sizeof(float));
+  cudaMalloc(&d_logits, B * T * vocab * sizeof(float));
+  cudaMemcpy(d_ids, h_ids.data(), B * T * sizeof(int32_t), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_tok, h_tok.data(), vocab * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_pos, h_pos.data(), T * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_gamma, h_gamma.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_beta, h_beta.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+
+  GPTParams params;
+  params.token_embedding = {d_tok, {vocab, D}, {D, 1}};
+  params.position_embedding = {d_pos, {T, D}, {D, 1}};
+  params.final_ln.gamma = {d_gamma, {D}, {1}};
+  params.final_ln.beta = {d_beta, {D}, {1}};
+  params.final_ln.eps = config.layernorm_eps;
+  params.lm_head = params.token_embedding;
+
+  GPTForwardState state;
+  state.embed_out = {d_embed, {B, T, D}, {T * D, D, 1}};
+  state.final_ln_out = {d_final, {B, T, D}, {T * D, D, 1}};
+  state.final_ln_state.mean = {d_mean, {B * T}, {1}};
+  state.final_ln_state.inv_std = {d_inv, {B * T}, {1}};
+  state.logits = {d_logits, {B * T, vocab}, {vocab, 1}};
+
+  Tensor2D<const int32_t> input_ids{d_ids, {B, T}, {T, 1}};
+  ASSERT_TRUE(gpt_forward(input_ids, config, params, state, stream_).ok());
+  stream_.synchronize();
+
+  std::vector<float> h_logits(B * T * vocab);
+  cudaMemcpy(h_logits.data(), d_logits, B * T * vocab * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  auto tok = test::cpu_embedding_forward(h_tok.data(), h_ids.data(), B * T, D);
+  std::vector<float> embed(B * T * D);
+  for (int64_t b = 0; b < B; ++b) {
+    for (int64_t t = 0; t < T; ++t) {
+      for (int64_t d = 0; d < D; ++d) {
+        int64_t out_idx = (b * T + t) * D + d;
+        embed[out_idx] = tok[out_idx] + h_pos[t * D + d];
+      }
+    }
+  }
+  auto ln = test::cpu_layernorm_forward(
+      embed.data(), h_gamma.data(), h_beta.data(), config.layernorm_eps, B * T, D);
+  auto expected = test::cpu_linear_forward(
+      ln.y.data(), h_tok.data(), nullptr, B * T, D, vocab, false);
+  EXPECT_TRUE(test::vectors_near(h_logits, expected, 1e-3f, 1e-2f))
+      << "gpt_forward logits mismatch";
+
+  cudaFree(d_ids);
+  cudaFree(d_tok); cudaFree(d_pos); cudaFree(d_gamma); cudaFree(d_beta);
+  cudaFree(d_embed); cudaFree(d_mean); cudaFree(d_inv);
+  cudaFree(d_final); cudaFree(d_logits);
+}
+
 TEST_F(GPTModelGPUTest, BackwardReturnsNotImplemented) {
   GPTConfig config;
   config.d_model = 4;

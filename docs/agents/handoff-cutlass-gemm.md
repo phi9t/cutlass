@@ -27,6 +27,10 @@ closed test-first:
 - `src/model/gpt_block.cc::block_forward` now performs both residual adds via
   `kernels::vec_add_f32`, and `src/model/gpt_block_test.cc` compares the GPU
   block output against a CPU reference instead of only checking finiteness.
+- `src/model/gpt_model.cc::gpt_forward` now adds positional embeddings via a
+  model-local CUDA helper, and `src/model/gpt_model_test.cc` has a zero-layer
+  GPU-vs-CPU reference test for token + position embedding, final LN, and LM
+  head.
 
 ## Next recommended scaffold frontier
 

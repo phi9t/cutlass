@@ -1,6 +1,7 @@
 # Layer 5 — Transformer block + GPT model.
 
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 package(default_visibility = [
     "//src:__subpackages__",
@@ -42,6 +43,18 @@ cc_library(
     ],
 )
 
+cuda_library(
+    name = "gpt_model_forward",
+    hdrs = ["gpt_model_forward_internal.h"],
+    srcs = ["gpt_model_forward.cu"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+        "//third_party/cuda:cudart",
+    ],
+    tags = ["cuda"],
+)
+
 cc_library(
     name = "gpt_model",
     hdrs = ["gpt_model.h"],
@@ -49,6 +62,7 @@ cc_library(
     deps = [
         ":gpt_block",
         ":gpt_config",
+        ":gpt_model_forward",
         ":gpt_params",
         "//src/core",
         "//src/ops:embedding",

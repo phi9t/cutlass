@@ -2,6 +2,7 @@
 
 #include "src/model/gpt_model.h"
 
+#include "src/model/gpt_model_forward_internal.h"
 #include "src/ops/embedding.h"
 #include "src/ops/layernorm.h"
 #include "src/ops/linear.h"
@@ -28,10 +29,9 @@ Status gpt_forward(Tensor2D<const int32_t> input_ids,
   }
 
   // Step 2: Add positional embedding.
-  // TODO: Generate position indices [0..T-1] tiled B times, gather from
-  // params.position_embedding, and add to embed_out.
-  // For v1: position_embedding is [max_seq_len, D], slice [0:T, :] and
-  // broadcast-add across batch.
+  GPT_RETURN_IF_ERROR(
+      add_position_embedding_f32(state.embed_out, params.position_embedding,
+                                 stream));
 
   // Step 3: Transformer blocks.
   Tensor3D<float> block_input{state.embed_out.data, {B, T, D}, {T * D, D, 1}};
