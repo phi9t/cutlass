@@ -58,7 +58,7 @@ which is not a linear alpha/beta epilogue. It is applied by a small
 
 - `//src/ops:linear_test` passes all 7 cases (no-bias, with-bias, identity,
   shape-error, backward dX and dW). `//src/model:gpt_block_test` passes.
-  The gtest ladder goes from **12/15 → 14/15**.
+  The first GEMM slice moved the gtest ladder from **12/15 -> 14/15**.
 - Rejected alternative: normalizing every operand to contiguous row-major with
   explicit transpose copies. It would work but adds device copies and scratch
   for what is purely a metadata reinterpretation; the transpose identity is
@@ -68,15 +68,18 @@ which is not a linear alpha/beta epilogue. It is applied by a small
   `gemm_cublaslt.cc`; the CUTLASS layout mapping turned out clean enough not to
   need it.
 
-## Scope cut (justified, per the handoff DoD)
+## Follow-on to reach 15/15
 
-`//src/attention:attention_forward_test` builds, links, launches, and passes 6
-of its 7 subtests. Its one remaining failure is a **numeric** mismatch that is
-**not** GEMM-related: the test runs with `causal=true`, but the GPU attention
-path (`src/attention/attention.cc:128-134`) passes a **null mask** to
-`masked_softmax_forward` with an explicit `TODO` — GPU attention does not yet
-apply the causal mask, while the CPU reference does. Wiring causal masking is
-attention-subsystem work (it needs either a new mask buffer in
-`AttentionForwardState` or a causal-aware softmax variant), genuinely beyond the
-fp32 GEMM feature this ADR covers. It is left as a tracked follow-on; this ADR
-deliberately does not expand into it.
+The remaining `//src/attention:attention_forward_test` failure turned out to
+have two attention-layer causes exposed only after fp32 batched GEMM worked:
+
+- `split_heads_f32` ignored `Tensor3D` input strides, but attention passes
+  strided Q/K/V views into packed `[B, T, 3*D]` QKV storage. It now reads
+  `input.stride[]` and writes contiguous `[B, H, T, Dh]` buffers.
+- The GPU path ran causal attention with an unmasked softmax, while the CPU
+  reference applies the upper-triangle causal mask. The existing
+  attention-forward CUDA scale/mask kernel is now exposed through a package
+  internal helper and applied after score GEMM for `config.causal`.
+
+With those follow-ons, `scripts/run_local_gpu_smoke.sh --with-gtest` passes:
+preflight, CUTLASS GEMM smoke, and all 15 gpu-tagged `//src` tests.

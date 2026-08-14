@@ -4,6 +4,8 @@
 // (e.g., causal mask generation, fused scale+mask).
 // The main forward orchestration lives in attention.cc.
 
+#include "src/attention/attention_forward_internal.h"
+
 #include <cuda_runtime.h>
 #include <cstdint>
 
@@ -11,18 +13,6 @@ namespace gpt {
 namespace attention {
 
 namespace {
-
-// Generate a causal mask for sequence length T.
-// mask[i, j] = 1 (masked) if j > i, else 0.
-// Output: [T, T] int8 mask.
-__global__ void generate_causal_mask_kernel(int8_t* __restrict__ mask,
-                                            int64_t T) {
-  int64_t i = blockIdx.y * blockDim.y + threadIdx.y;
-  int64_t j = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < T && j < T) {
-    mask[i * T + j] = (j > i) ? 1 : 0;
-  }
-}
 
 // Fused scale + causal mask fill:
 //   scores[b, h, i, j] *= scale
@@ -48,8 +38,22 @@ __global__ void scale_and_causal_mask_kernel(
 
 }  // namespace
 
-// TODO: Expose these kernels through a clean internal API and wire
-// them into attention.cc once the causal mask path is enabled.
+Status scale_and_causal_mask_scores_f32(Tensor4D<float> scores,
+                                        float scale,
+                                        const CudaStream& stream) {
+  if (scores.shape[2] != scores.shape[3]) {
+    return Status(StatusCode::kInvalidArgument,
+                  "scale_and_causal_mask_scores_f32: scores must be square");
+  }
+  int64_t BH = scores.shape[0] * scores.shape[1];
+  int64_t T = scores.shape[2];
+  dim3 block(16, 16);
+  dim3 grid((T + block.x - 1) / block.x, (T + block.y - 1) / block.y, BH);
+  scale_and_causal_mask_kernel<<<grid, block, 0, stream.get()>>>(
+      scores.data, scale, BH, T);
+  GPT_CHECK_CUDA(cudaGetLastError());
+  return Status::Ok();
+}
 
 }  // namespace attention
 }  // namespace gpt

@@ -10,7 +10,10 @@ package(default_visibility = [
 
 cuda_library(
     name = "attention",
-    hdrs = ["attention.h"],
+    hdrs = [
+        "attention.h",
+        "attention_forward_internal.h",
+    ],
     srcs = [
         "attention.cc",
         "attention_forward.cu",

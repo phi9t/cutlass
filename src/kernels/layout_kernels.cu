@@ -38,8 +38,10 @@ __global__ void transpose_2d_kernel(const float* __restrict__ input,
 __global__ void split_heads_kernel(const float* __restrict__ input,
                                    float* __restrict__ output,
                                    int64_t B, int64_t T, int64_t H,
-                                   int64_t Dh) {
-  // input layout:  [B, T, H*Dh]  row-major
+                                   int64_t Dh, int64_t in_stride_b,
+                                   int64_t in_stride_t,
+                                   int64_t in_stride_d) {
+  // input layout:  [B, T, H*Dh], possibly a strided view into packed QKV
   // output layout: [B, H, T, Dh] row-major
   int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   int64_t total = B * H * T * Dh;
@@ -50,7 +52,8 @@ __global__ void split_heads_kernel(const float* __restrict__ input,
   int64_t h = (idx / (Dh * T)) % H;
   int64_t b = idx / (Dh * T * H);
 
-  int64_t in_idx = b * (T * H * Dh) + t * (H * Dh) + h * Dh + d;
+  int64_t in_idx = b * in_stride_b + t * in_stride_t +
+                   (h * Dh + d) * in_stride_d;
   output[idx] = input[in_idx];
 }
 
@@ -137,7 +140,8 @@ Status split_heads_f32(Tensor3D<const float> input,
   int block = 256;
   int grid = static_cast<int>((total + block - 1) / block);
   split_heads_kernel<<<grid, block, 0, stream.get()>>>(
-      input.data, output.data, B, T, n_heads, Dh);
+      input.data, output.data, B, T, n_heads, Dh,
+      input.stride[0], input.stride[1], input.stride[2]);
   return Status::Ok();
 }
 
