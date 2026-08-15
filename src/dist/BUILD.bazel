@@ -24,5 +24,6 @@ cc_library(
     deps = [
         ":nccl_context",
         "//src/core",
+        "//src/kernels:elementwise",
     ],
 )

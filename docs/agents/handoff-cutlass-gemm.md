@@ -44,9 +44,8 @@ closed test-first:
   bf16, and dispatch to cuBLASLt variants.
 - `src/kernels/gemm_cublaslt.cc` now covers fp32, bf16, batched fp32, and
   batched bf16 through cuBLASLt.
-- `src/dist/nccl_context.cc` now supports `world_size == 1`; multi-rank still
-  returns `kNotImplemented` because there is no rendezvous or shared unique-ID
-  API in `NcclConfig`.
+- `src/dist/nccl_context.cc` now supports single-rank self-generated NCCL IDs
+  and explicit multi-rank shared-ID rendezvous through `NcclConfig::unique_id`.
 - `src/checkpoint/checkpoint.cc` now parses `meta.json` and fills
   `CheckpointMetadata::{step,param_count,dataset_cursor,config_json}`.
 - `src/attention/attention.cc::attention_backward` now reverses the forward path
@@ -81,15 +80,15 @@ closed test-first:
   parameters, AdamW moment buffers, trainer/optimizer step, and metadata.
   `tests/integration/resume_equivalence_test.cc` verifies bitwise-identical
   losses for uninterrupted vs checkpoint/resume training.
+- `src/dist/ddp.cc` now averages buckets by `1/world_size` after all-reduce.
+  `tests/integration/ddp_2gpu_test.cc` initializes two NCCL ranks on two GPUs
+  with a shared unique ID and verifies averaged gradient buckets on both ranks.
 
 ## Next recommended scaffold frontier
 
-The next larger follow-on work is the distributed runtime layer: defining the
-DDP/NCCL multi-rank rendezvous policy.
-
-The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is
-wired. The only initialized `NcclContext` today is `world_size == 1`, where
-dividing by `world_size` is a no-op and does not produce a useful red bar.
+The next larger follow-on work is hardening and performance: replacing remaining
+perf placeholders with measured kernels and optimizing known reference paths
+such as LayerNorm backward.
 
 Keep landing local-only unless explicitly told to push.
 

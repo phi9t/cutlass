@@ -6,6 +6,7 @@
 // One NcclContext per process (one process per GPU).
 
 #include <cstdint>
+#include <cstring>
 
 #include "src/core/status.h"
 #include "src/core/stream.h"
@@ -17,7 +18,15 @@ struct NcclConfig {
   int world_size = 1;
   int rank = 0;
   int local_gpu_id = 0;  // CUDA device ordinal for this rank.
+  unsigned char unique_id[128] = {};
+
+  [[nodiscard]] bool has_unique_id() const {
+    unsigned char zero[128] = {};
+    return std::memcmp(unique_id, zero, sizeof(unique_id)) != 0;
+  }
 };
+
+Status create_nccl_unique_id(unsigned char unique_id[128]);
 
 class NcclContext {
  public:

@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 #include <nccl.h>
+#include <cstring>
 #include <string>
 
 namespace gpt {
@@ -24,6 +25,18 @@ Status cuda_status(cudaError_t result, const char* context) {
 }
 
 }  // namespace
+
+Status create_nccl_unique_id(unsigned char unique_id[128]) {
+  if (unique_id == nullptr) {
+    return Status(StatusCode::kInvalidArgument,
+                  "create_nccl_unique_id: null output");
+  }
+  ncclUniqueId id;
+  GPT_RETURN_IF_ERROR(nccl_status(ncclGetUniqueId(&id), "ncclGetUniqueId"));
+  static_assert(sizeof(id.internal) == 128, "Unexpected ncclUniqueId size");
+  std::memcpy(unique_id, id.internal, sizeof(id.internal));
+  return Status::Ok();
+}
 
 NcclContext::~NcclContext() {
   if (initialized_) {
@@ -46,16 +59,22 @@ Status NcclContext::init(const NcclConfig& config) {
     return Status(StatusCode::kInvalidArgument,
                   "NcclContext rank out of range");
   }
-  if (config.world_size != 1) {
-    return Status(StatusCode::kNotImplemented,
-                  "NCCL multi-rank rendezvous not yet wired");
-  }
-
   GPT_RETURN_IF_ERROR(cuda_status(cudaSetDevice(config.local_gpu_id),
                                   "cudaSetDevice"));
   ncclUniqueId unique_id;
-  GPT_RETURN_IF_ERROR(nccl_status(ncclGetUniqueId(&unique_id),
-                                  "ncclGetUniqueId"));
+  if (config.world_size == 1 && !config.has_unique_id()) {
+    GPT_RETURN_IF_ERROR(nccl_status(ncclGetUniqueId(&unique_id),
+                                    "ncclGetUniqueId"));
+  } else {
+    if (!config.has_unique_id()) {
+      return Status(StatusCode::kInvalidArgument,
+                    "NcclContext multi-rank requires shared unique_id");
+    }
+    static_assert(sizeof(unique_id.internal) == 128,
+                  "Unexpected ncclUniqueId size");
+    std::memcpy(unique_id.internal, config.unique_id,
+                sizeof(unique_id.internal));
+  }
   ncclComm_t comm = nullptr;
   GPT_RETURN_IF_ERROR(nccl_status(
       ncclCommInitRank(&comm, config.world_size, unique_id, config.rank),
