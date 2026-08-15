@@ -8,6 +8,12 @@ Completed on local `main`:
 - `f3b9ac2e` — completed the causal attention forward path by making
   `split_heads_f32` honor strided Q/K/V views and applying the existing fused
   scale+causal-mask kernel.
+- `7109ebf9`, `13d3dc28` — wired CUTLASS bf16 GEMM and batched bf16 GEMM.
+- `2706a499`, `c55001bf`, `0f0b468d`, `d81880e5` — wired the cuBLASLt fp32,
+  bf16, batched fp32, and batched bf16 GEMM backends.
+- `97140b30` — made contiguous repack honor non-contiguous strided 2D input.
+- `bb9b1570` — wired the single-rank NCCL lifecycle and identity all-reduce.
+- `c60b69e8` — loaded checkpoint metadata from `meta.json`.
 
 Verification, inside the hermetic rootfs on the B200:
 - `scripts/run_local_gpu_smoke.sh --with-gtest` -> **PASS**
@@ -31,6 +37,15 @@ closed test-first:
   model-local CUDA helper, and `src/model/gpt_model_test.cc` has a zero-layer
   GPU-vs-CPU reference test for token + position embedding, final LN, and LM
   head.
+- `src/kernels/gemm_cutlass.cu` now covers fp32, batched fp32, bf16, batched
+  bf16, and dispatch to cuBLASLt variants.
+- `src/kernels/gemm_cublaslt.cc` now covers fp32, bf16, batched fp32, and
+  batched bf16 through cuBLASLt.
+- `src/dist/nccl_context.cc` now supports `world_size == 1`; multi-rank still
+  returns `kNotImplemented` because there is no rendezvous or shared unique-ID
+  API in `NcclConfig`.
+- `src/checkpoint/checkpoint.cc` now parses `meta.json` and fills
+  `CheckpointMetadata::{step,param_count,dataset_cursor,config_json}`.
 
 ## Next recommended scaffold frontier
 
@@ -38,6 +53,10 @@ Full attention backward and GPT backward remain larger follow-on work:
 - `src/attention/attention.cc::attention_backward` returns `kNotImplemented`.
 - `src/model/gpt_block.cc::block_backward` returns `kNotImplemented`.
 - `src/model/gpt_model.cc::gpt_backward` returns `kNotImplemented`.
+
+The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is
+wired. The only initialized `NcclContext` today is `world_size == 1`, where
+dividing by `world_size` is a no-op and does not produce a useful red bar.
 
 Keep landing local-only unless explicitly told to push.
 
@@ -62,14 +81,14 @@ Original pre-implementation state, verified inside the rootfs on the B200:
   `//src/attention:attention_forward_test`, `//src/model:gpt_block_test` — all
   fail for **one root cause**: `kernels::gemm_f32` is a `kNotImplemented` stub.
 
-## The task (this is the scoped-in feature work now)
+## The original task (complete)
 
 Replace the `gemm_f32` stub in `src/kernels/gemm_cutlass.cu` with a real CUTLASS
 fp32 GEMM so `linear_test` (and its dependents) pass. **Landing rule: commit to
 local `main` only — never push** (AGENTS.md; origin=phi9t fork, upstream=NVIDIA).
 Commit trailer required: `Co-authored-by: TRAE CLI <noreply@bytedance.com>`.
 
-## Red bar (drive this test-first, /tdd)
+## Original red bar
 
 Run: `scripts/run_local_gpu_smoke.sh --with-gtest` (re-execs into rootfs; rung 24
 is the gtest rung). Or, faster inner loop, inside the rootfs:
@@ -123,30 +142,24 @@ epilogue as linear alpha/beta. Add a `cudaGetLastError()`/status check and
 return `StatusCode::kCudaError` on launch failure so tests fail loudly, not
 silently.
 
-## Known follow-on issues (triage after gemm_f32 works)
+## Resolved follow-on issues from the original GEMM task
 
-1. **Bias not applied.** `linear_forward` has `// TODO: Add bias`. Test
-   `LinearTest.ForwardWithBiasMatchesCPU` WILL still fail after GEMM alone —
-   you must add the bias broadcast-add (`[D_out]` over `[N,D_out]`). There may
-   be a suitable kernel in `src/kernels/elementwise.*` or `src/ops/*`; check
-   before writing a new one. `linear_backward` also has `// TODO db` (col-sum of
-   dY) — `linear_test` backward cases check dX and dW; confirm whether db is
-   asserted before deciding scope.
-2. **attention_forward_test / gpt_block_test** depend on linear; they may pass
-   once linear works, or may need `batched_gemm_f32` (also a stub in
-   `gemm_cutlass.cu`) and/or the attention score/softmax path. Re-run and triage.
-   Batched GEMM feeds attention `S=Q@K^T` and `C=P@V`.
+1. **Bias and db.** `linear_forward` applies bias through
+   `kernels::bias_add_f32`; `linear_backward` computes `db` through
+   `kernels::col_sum_f32`; `//src/ops:linear_test` covers both.
+2. **Attention/block forward.** `batched_gemm_f32`, strided Q/K/V split, causal
+   masking, residual adds, and positional embedding are wired. The gpu-tagged
+   `//src/...` suite is green.
 
-## Files
+## Original files touched by the GEMM task
 
-- `src/kernels/gemm_cutlass.cu` — the stubs to implement (`gemm_f32`, then maybe
-  `batched_gemm_f32`).
+- `src/kernels/gemm_cutlass.cu` — CUTLASS GEMM backends and dispatch.
 - `src/kernels/gemm.h` — signatures (already includes `<cuda_bf16.h>`).
-- `src/ops/linear.cc` — caller; transposed-stride views + the bias TODO.
-- `src/ops/linear_test.cc` — the red bar.
+- `src/ops/linear.cc` — caller; transposed-stride views, bias add, and `db`.
+- `src/ops/linear_test.cc` — original red bar.
 - `tests/smoke/cutlass_gemm_smoke.cu` — working CUTLASS example.
 - `src/kernels/gemm_cublaslt.cc` — alternative backend if CUTLASS layout mapping
-  gets painful (cuBLASLt handles arbitrary strides/transpose naturally).
+  gets painful (now also implemented).
 
 ## Definition of done
 
