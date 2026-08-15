@@ -196,7 +196,7 @@
   "moduleExtensions": {
     "//tools/bazel:cuda_ext.bzl%cuda": {
       "general": {
-        "bzlTransitiveDigest": "cHqs5RkPzp/QF/jRn6OqDV4oKA2wgebyM1beMpFQjXs=",
+        "bzlTransitiveDigest": "aiGlSnap4QYZGRXaPaeWt8XRNnHz1+zWFSLvRkyp3ug=",
         "usagesDigest": "x/6BJ8ICklU6vFWayicSZaTi4BmQ2hlXilZzkZDoGas=",
         "recordedInputs": [],
         "generatedRepoSpecs": {

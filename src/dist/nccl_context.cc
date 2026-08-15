@@ -2,11 +2,28 @@
 
 #include "src/dist/nccl_context.h"
 
-// TODO(m7): Include <nccl.h> and implement.
-// #include <nccl.h>
+#include <cuda_runtime.h>
+#include <nccl.h>
+#include <string>
 
 namespace gpt {
 namespace dist {
+
+namespace {
+
+Status nccl_status(ncclResult_t result, const char* context) {
+  if (result == ncclSuccess) return Status::Ok();
+  return Status(StatusCode::kNcclError,
+                std::string(context) + ": " + ncclGetErrorString(result));
+}
+
+Status cuda_status(cudaError_t result, const char* context) {
+  if (result == cudaSuccess) return Status::Ok();
+  return Status(StatusCode::kCudaError,
+                std::string(context) + ": " + cudaGetErrorString(result));
+}
+
+}  // namespace
 
 NcclContext::~NcclContext() {
   if (initialized_) {
@@ -21,22 +38,42 @@ Status NcclContext::init(const NcclConfig& config) {
   }
   config_ = config;
 
-  // TODO: ncclGetUniqueId, broadcast via shared memory or file,
-  //       ncclCommInitRank.
-  // For single-node, all ranks can share via a file or MPI.
+  if (config.world_size <= 0) {
+    return Status(StatusCode::kInvalidArgument,
+                  "NcclContext world_size must be positive");
+  }
+  if (config.rank < 0 || config.rank >= config.world_size) {
+    return Status(StatusCode::kInvalidArgument,
+                  "NcclContext rank out of range");
+  }
+  if (config.world_size != 1) {
+    return Status(StatusCode::kNotImplemented,
+                  "NCCL multi-rank rendezvous not yet wired");
+  }
 
+  GPT_RETURN_IF_ERROR(cuda_status(cudaSetDevice(config.local_gpu_id),
+                                  "cudaSetDevice"));
+  ncclUniqueId unique_id;
+  GPT_RETURN_IF_ERROR(nccl_status(ncclGetUniqueId(&unique_id),
+                                  "ncclGetUniqueId"));
+  ncclComm_t comm = nullptr;
+  GPT_RETURN_IF_ERROR(nccl_status(
+      ncclCommInitRank(&comm, config.world_size, unique_id, config.rank),
+      "ncclCommInitRank"));
+
+  comm_ = comm;
   initialized_ = true;
-  return Status(StatusCode::kNotImplemented,
-                "NCCL init not yet wired");
+  return Status::Ok();
 }
 
 Status NcclContext::destroy() {
   if (!initialized_) return Status::Ok();
 
-  // TODO: ncclCommDestroy(comm_);
+  ncclComm_t comm = reinterpret_cast<ncclComm_t>(comm_);
+  Status status = nccl_status(ncclCommDestroy(comm), "ncclCommDestroy");
   initialized_ = false;
   comm_ = nullptr;
-  return Status::Ok();
+  return status;
 }
 
 Status NcclContext::all_reduce_sum(float* buffer, int64_t count,
@@ -45,10 +82,14 @@ Status NcclContext::all_reduce_sum(float* buffer, int64_t count,
     return Status(StatusCode::kInvalidArgument,
                   "NcclContext not initialized");
   }
-  // TODO: ncclAllReduce(buffer, buffer, count, ncclFloat, ncclSum,
-  //                     comm_, stream.get());
-  return Status(StatusCode::kNotImplemented,
-                "NCCL all_reduce not yet wired");
+  if (count < 0) {
+    return Status(StatusCode::kInvalidArgument,
+                  "NcclContext all_reduce count must be non-negative");
+  }
+  ncclComm_t comm = reinterpret_cast<ncclComm_t>(comm_);
+  return nccl_status(ncclAllReduce(buffer, buffer, static_cast<size_t>(count),
+                                   ncclFloat, ncclSum, comm, stream.get()),
+                     "ncclAllReduce");
 }
 
 }  // namespace dist
