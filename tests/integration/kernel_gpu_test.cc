@@ -82,3 +82,39 @@ TEST_F(KernelIntegrationTest, Transpose2DInverseRoundTrip) {
 
   cudaFree(d_input); cudaFree(d_transposed); cudaFree(d_back);
 }
+
+TEST_F(KernelIntegrationTest, RepackContiguousCopiesStridedRows) {
+  const int64_t M = 3, N = 4, pitch = 6;
+  std::vector<float> h_input(M * pitch, -1000.0f);
+  for (int64_t i = 0; i < M; ++i) {
+    for (int64_t j = 0; j < N; ++j) {
+      h_input[i * pitch + j] = static_cast<float>(i * 10 + j);
+    }
+  }
+  std::vector<float> h_expected{
+      0.0f, 1.0f, 2.0f, 3.0f,
+      10.0f, 11.0f, 12.0f, 13.0f,
+      20.0f, 21.0f, 22.0f, 23.0f,
+  };
+
+  float *d_input, *d_output;
+  cudaMalloc(&d_input, h_input.size() * sizeof(float));
+  cudaMalloc(&d_output, M * N * sizeof(float));
+  cudaMemcpy(d_input, h_input.data(), h_input.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  Tensor2D<const float> input{d_input, {M, N}, {pitch, 1}};
+  Tensor2D<float> output{d_output, {M, N}, {N, 1}};
+
+  ASSERT_TRUE(kernels::repack_contiguous_f32(input, output, stream_).ok());
+  stream_.synchronize();
+
+  std::vector<float> h_output(M * N);
+  cudaMemcpy(h_output.data(), d_output, h_output.size() * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  EXPECT_TRUE(test::vectors_near(h_output, h_expected, 1e-6f));
+
+  cudaFree(d_input);
+  cudaFree(d_output);
+}

@@ -79,6 +79,23 @@ __global__ void merge_heads_kernel(const float* __restrict__ input,
   output[idx] = input[in_idx];
 }
 
+__global__ void repack_2d_kernel(const float* __restrict__ input,
+                                 float* __restrict__ output,
+                                 int64_t M, int64_t N,
+                                 int64_t in_stride_m,
+                                 int64_t in_stride_n,
+                                 int64_t out_stride_m,
+                                 int64_t out_stride_n) {
+  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t total = M * N;
+  if (idx >= total) return;
+
+  int64_t n = idx % N;
+  int64_t m = idx / N;
+  output[m * out_stride_m + n * out_stride_n] =
+      input[m * in_stride_m + n * in_stride_n];
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -119,9 +136,18 @@ Status repack_contiguous_f32(Tensor2D<const float> input,
     }
     return Status::Ok();
   }
-  // TODO: Implement strided copy kernel for non-contiguous inputs.
-  return Status(StatusCode::kNotImplemented,
-                "Strided repack not yet implemented");
+  if (!output.is_contiguous()) {
+    return Status(StatusCode::kInvalidArgument,
+                  "repack_contiguous output must be contiguous");
+  }
+
+  int64_t total = input.numel();
+  int block = 256;
+  int grid = static_cast<int>((total + block - 1) / block);
+  repack_2d_kernel<<<grid, block, 0, stream.get()>>>(
+      input.data, output.data, input.shape[0], input.shape[1],
+      input.stride[0], input.stride[1], output.stride[0], output.stride[1]);
+  return Status::Ok();
 }
 
 Status split_heads_f32(Tensor3D<const float> input,
