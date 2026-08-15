@@ -22,6 +22,7 @@
 
 #include <cuda_bf16.h>
 
+#include "cutlass/bfloat16.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/gemm/device/gemm_batched.h"
 
@@ -54,6 +55,10 @@ Orientation classify(const Tensor2D<float>& m, int64_t* leading_dim) {
   return classify_strides(m.stride[0], m.stride[1], leading_dim);
 }
 
+Orientation classify(const Tensor2D<__nv_bfloat16>& m, int64_t* leading_dim) {
+  return classify_strides(m.stride[0], m.stride[1], leading_dim);
+}
+
 // Launch one concrete CUTLASS device::Gemm instantiation for the detected
 // layouts. M,N,K and the leading dims are computed by the caller.
 template <typename LayoutA, typename LayoutB>
@@ -66,6 +71,27 @@ cutlass::Status launch_gemm(int m, int n, int k, float alpha, const float* A,
   Gemm op;
   typename Gemm::Arguments args({m, n, k}, {A, lda}, {B, ldb}, {C, ldc},
                                 {C, ldc}, {alpha, beta});
+  return op(args, nullptr, stream);
+}
+
+template <typename LayoutA, typename LayoutB>
+cutlass::Status launch_gemm_bf16(int m, int n, int k, float alpha,
+                                 const __nv_bfloat16* A, int lda,
+                                 const __nv_bfloat16* B, int ldb, float beta,
+                                 __nv_bfloat16* C, int ldc,
+                                 cudaStream_t stream) {
+  using BFloat16 = cutlass::bfloat16_t;
+  using ColumnMajor = cutlass::layout::ColumnMajor;
+  using Gemm = cutlass::gemm::device::Gemm<BFloat16, LayoutA, BFloat16,
+                                           LayoutB, BFloat16, ColumnMajor,
+                                           float>;
+  auto const* cutlass_a = reinterpret_cast<BFloat16 const*>(A);
+  auto const* cutlass_b = reinterpret_cast<BFloat16 const*>(B);
+  auto* cutlass_c = reinterpret_cast<BFloat16*>(C);
+  Gemm op;
+  typename Gemm::Arguments args({m, n, k}, {cutlass_a, lda}, {cutlass_b, ldb},
+                                {cutlass_c, ldc}, {cutlass_c, ldc},
+                                {alpha, beta});
   return op(args, nullptr, stream);
 }
 
@@ -181,9 +207,57 @@ Status gemm_bf16(Tensor2D<__nv_bfloat16> A, Tensor2D<__nv_bfloat16> B,
     return Status(StatusCode::kInvalidArgument, "GEMM output shape mismatch");
   }
 
-  // TODO: Launch CUTLASS bf16 GEMM kernel with fp32 accumulation.
-  return Status(StatusCode::kNotImplemented,
-                "CUTLASS bf16 GEMM kernel not yet wired");
+  const int M = static_cast<int>(A.shape[0]);
+  const int N = static_cast<int>(B.shape[1]);
+  const int K = static_cast<int>(A.shape[1]);
+
+  int64_t lda64 = 0, ldb64 = 0, ldc64 = 0;
+  const Orientation a_orient = classify(A, &lda64);
+  const Orientation b_orient = classify(B, &ldb64);
+  const Orientation c_orient = classify(C, &ldc64);
+  if (a_orient == Orientation::kUnsupported ||
+      b_orient == Orientation::kUnsupported ||
+      c_orient != Orientation::kRowMajor) {
+    return Status(StatusCode::kInvalidArgument,
+                  "gemm_bf16: unsupported strides (need unit-stride axis per "
+                  "operand and a row-major output C)");
+  }
+
+  using RowMajor = cutlass::layout::RowMajor;
+  using ColMajor = cutlass::layout::ColumnMajor;
+
+  const int lda = static_cast<int>(ldb64);
+  const int ldb = static_cast<int>(lda64);
+  const int ldc = static_cast<int>(ldc64);
+  const bool b_is_rm = (b_orient == Orientation::kRowMajor);
+  const bool a_is_rm = (a_orient == Orientation::kRowMajor);
+
+  cutlass::Status cs;
+  if (!b_is_rm && !a_is_rm) {
+    cs = launch_gemm_bf16<RowMajor, RowMajor>(
+        N, M, K, alpha, B.data, lda, A.data, ldb, beta, C.data, ldc,
+        stream.get());
+  } else if (!b_is_rm && a_is_rm) {
+    cs = launch_gemm_bf16<RowMajor, ColMajor>(
+        N, M, K, alpha, B.data, lda, A.data, ldb, beta, C.data, ldc,
+        stream.get());
+  } else if (b_is_rm && !a_is_rm) {
+    cs = launch_gemm_bf16<ColMajor, RowMajor>(
+        N, M, K, alpha, B.data, lda, A.data, ldb, beta, C.data, ldc,
+        stream.get());
+  } else {
+    cs = launch_gemm_bf16<ColMajor, ColMajor>(
+        N, M, K, alpha, B.data, lda, A.data, ldb, beta, C.data, ldc,
+        stream.get());
+  }
+
+  if (cs != cutlass::Status::kSuccess) {
+    return Status(StatusCode::kCudaError,
+                  std::string("CUTLASS gemm_bf16 launch failed: ") +
+                      cutlassGetStatusString(cs));
+  }
+  GPT_CHECK_CUDA(cudaGetLastError());
+  return Status::Ok();
 }
 
 Status batched_gemm_f32(Tensor3D<float> A, Tensor3D<float> B,
