@@ -13,7 +13,6 @@
 //   2. Initializes the trainer
 //   3. Loads data
 //   4. Runs the training loop
-//   5. Saves checkpoints
 
 #include <cstdio>
 #include <cstdlib>
@@ -25,26 +24,30 @@
 
 namespace {
 
-int64_t EnvInt64(const char* name, int64_t fallback) {
-  const char* value = std::getenv(name);
-  if (value == nullptr || value[0] == '\0') return fallback;
+int64_t EnvInt64(char const* name, int64_t fallback) {
+  char const* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return fallback;
+  }
   return std::atoll(value);
 }
 
-float EnvFloat(const char* name, float fallback) {
-  const char* value = std::getenv(name);
-  if (value == nullptr || value[0] == '\0') return fallback;
+float EnvFloat(char const* name, float fallback) {
+  char const* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return fallback;
+  }
   return std::atof(value);
 }
 
-const char* TokenPath(int argc, char** argv) {
+char const* TokenPath(int argc, char** argv) {
   if (argc > 1 && argv[1] != nullptr && argv[1][0] != '\0') {
     return argv[1];
   }
   return std::getenv("GPT_TOKENS_PATH");
 }
 
-void PrintStatus(const char* context, const gpt::Status& status, int rank) {
+void PrintStatus(char const* context, gpt::Status const& status, int rank) {
   std::fprintf(stderr, "[rank %d] %s failed: %s\n", rank, context,
                status.message().c_str());
 }
@@ -57,15 +60,19 @@ int main(int argc, char** argv) {
   int rank = 0;
   int world_size = 1;
 
-  const char* rank_env = std::getenv("RANK");
-  const char* world_env = std::getenv("WORLD_SIZE");
-  if (rank_env) rank = std::atoi(rank_env);
-  if (world_env) world_size = std::atoi(world_env);
+  char const* rank_env = std::getenv("RANK");
+  char const* world_env = std::getenv("WORLD_SIZE");
+  if (rank_env) {
+    rank = std::atoi(rank_env);
+  }
+  if (world_env) {
+    world_size = std::atoi(world_env);
+  }
 
   // Set CUDA device.
   gpt::DeviceGuard guard(rank);
 
-  const char* token_path = TokenPath(argc, argv);
+  char const* token_path = TokenPath(argc, argv);
   if (token_path == nullptr || token_path[0] == '\0') {
     std::fprintf(stderr,
                  "Usage: GPT_TOKENS_PATH=/path/to/int32_tokens.bin "
@@ -91,8 +98,8 @@ int main(int argc, char** argv) {
   config.max_steps = EnvInt64("GPT_MAX_STEPS", 1000);
   config.log_interval = EnvInt64("GPT_LOG_INTERVAL", 10);
 
-  const int64_t batch_size = EnvInt64("GPT_BATCH_SIZE", 8);
-  const int64_t seq_len = config.model_config.max_seq_len;
+  int64_t const batch_size = EnvInt64("GPT_BATCH_SIZE", 8);
+  int64_t const seq_len = config.model_config.max_seq_len;
 
   gpt::data::DatasetConfig dataset_config;
   dataset_config.path = token_path;
