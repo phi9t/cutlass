@@ -61,6 +61,7 @@ cc_test(
         "//src/checkpoint",
         "//src/model:gpt_model",
         "//tests:test_main",
+        "//tests:test_utils",
         "@googletest//:gtest",
     ],
     tags = ["gpu"],
