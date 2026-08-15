@@ -14,6 +14,9 @@ Completed on local `main`:
 - `97140b30` — made contiguous repack honor non-contiguous strided 2D input.
 - `bb9b1570` — wired the single-rank NCCL lifecycle and identity all-reduce.
 - `c60b69e8` — loaded checkpoint metadata from `meta.json`.
+- attention backward slice — wired `src/attention/attention.cc::attention_backward`
+  and a tiny GPU-vs-CPU backward test for `dX`, QKV projection grads, and output
+  projection grads.
 
 Verification, inside the hermetic rootfs on the B200:
 - `scripts/run_local_gpu_smoke.sh --with-gtest` -> **PASS**
@@ -46,11 +49,13 @@ closed test-first:
   API in `NcclConfig`.
 - `src/checkpoint/checkpoint.cc` now parses `meta.json` and fills
   `CheckpointMetadata::{step,param_count,dataset_cursor,config_json}`.
+- `src/attention/attention.cc::attention_backward` now reverses the forward path
+  using existing linear, softmax, and batched GEMM primitives plus small
+  attention-local gradient layout kernels.
 
 ## Next recommended scaffold frontier
 
-Full attention backward and GPT backward remain larger follow-on work:
-- `src/attention/attention.cc::attention_backward` returns `kNotImplemented`.
+Block backward and GPT backward remain larger follow-on work:
 - `src/model/gpt_block.cc::block_backward` returns `kNotImplemented`.
 - `src/model/gpt_model.cc::gpt_backward` returns `kNotImplemented`.
 

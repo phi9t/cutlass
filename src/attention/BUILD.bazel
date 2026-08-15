@@ -12,6 +12,7 @@ cuda_library(
     name = "attention",
     hdrs = [
         "attention.h",
+        "attention_backward_internal.h",
         "attention_forward_internal.h",
     ],
     srcs = [

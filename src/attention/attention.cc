@@ -6,6 +6,10 @@
 
 #include "src/attention/attention.h"
 
+#include <cuda_runtime.h>
+#include <vector>
+
+#include "src/attention/attention_backward_internal.h"
 #include "src/attention/attention_forward_internal.h"
 #include "src/kernels/gemm.h"
 #include "src/kernels/layout_kernels.h"
@@ -14,6 +18,34 @@
 
 namespace gpt {
 namespace attention {
+
+namespace {
+
+class DeviceScratch {
+ public:
+  DeviceScratch() = default;
+  ~DeviceScratch() {
+    for (float* ptr : buffers_) cudaFree(ptr);
+  }
+
+  Result<float*> allocate(int64_t count) {
+    float* ptr = nullptr;
+    cudaError_t err = cudaMalloc(&ptr, static_cast<size_t>(count) * sizeof(float));
+    if (err != cudaSuccess) {
+      return Status(StatusCode::kCudaError, cudaGetErrorString(err));
+    }
+    buffers_.push_back(ptr);
+    return ptr;
+  }
+
+  DeviceScratch(const DeviceScratch&) = delete;
+  DeviceScratch& operator=(const DeviceScratch&) = delete;
+
+ private:
+  std::vector<float*> buffers_;
+};
+
+}  // namespace
 
 Status attention_forward(Tensor3D<const float> X,
                          const AttentionConfig& config,
@@ -189,20 +221,150 @@ Status attention_backward(Tensor3D<const float> dO,
                           Tensor3D<float> dX,
                           AttentionGrads& grads,
                           const CudaStream& stream) {
-  // TODO(m5): Implement attention backward.
-  //
-  // Stages (reverse order of forward):
-  //   9. Output projection backward → dC_merged, dW_o, db_o
-  //   8. Merge heads backward (= split heads of gradient)
-  //   7. Context matmul backward → dP, dV
-  //   6. Softmax backward → dS
-  //   5. Causal mask backward (masked positions get zero grad)
-  //   3-4. Score matmul backward → dQ, dK
-  //   2. Merge heads backward for Q,K,V → dQKV_flat
-  //   1. QKV projection backward → dX, dW_qkv, db_qkv
+  int64_t B = X.shape[0];
+  int64_t T = X.shape[1];
+  int64_t D = X.shape[2];
+  int64_t H = config.n_heads;
+  int64_t Dh = config.head_dim;
 
-  return Status(StatusCode::kNotImplemented,
-                "attention_backward not yet implemented");
+  if (D != config.d_model || D != H * Dh) {
+    return Status(StatusCode::kInvalidArgument,
+                  "attention_backward: invalid model/head dimensions");
+  }
+
+  DeviceScratch scratch;
+  auto d_context_merged_ptr = scratch.allocate(B * T * D);
+  if (!d_context_merged_ptr.ok()) return d_context_merged_ptr.status();
+  auto d_context_ptr = scratch.allocate(B * H * T * Dh);
+  if (!d_context_ptr.ok()) return d_context_ptr.status();
+  auto dP_ptr = scratch.allocate(B * H * T * T);
+  if (!dP_ptr.ok()) return dP_ptr.status();
+  auto dV_ptr = scratch.allocate(B * H * T * Dh);
+  if (!dV_ptr.ok()) return dV_ptr.status();
+  auto dS_ptr = scratch.allocate(B * H * T * T);
+  if (!dS_ptr.ok()) return dS_ptr.status();
+  auto dQ_ptr = scratch.allocate(B * H * T * Dh);
+  if (!dQ_ptr.ok()) return dQ_ptr.status();
+  auto dK_ptr = scratch.allocate(B * H * T * Dh);
+  if (!dK_ptr.ok()) return dK_ptr.status();
+  auto dQKV_ptr = scratch.allocate(B * T * 3 * D);
+  if (!dQKV_ptr.ok()) return dQKV_ptr.status();
+
+  Tensor3D<float> d_context_merged{
+      d_context_merged_ptr.value(), {B, T, D}, {T * D, D, 1}};
+  Tensor4D<float> d_context{
+      d_context_ptr.value(), {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  Tensor4D<float> dP{
+      dP_ptr.value(), {B, H, T, T}, {H * T * T, T * T, T, 1}};
+  Tensor4D<float> dV{
+      dV_ptr.value(), {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  Tensor4D<float> dS{
+      dS_ptr.value(), {B, H, T, T}, {H * T * T, T * T, T, 1}};
+  Tensor4D<float> dQ{
+      dQ_ptr.value(), {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  Tensor4D<float> dK{
+      dK_ptr.value(), {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  Tensor3D<float> dQKV{
+      dQKV_ptr.value(), {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
+
+  // Step 9: output projection backward.
+  {
+    Tensor2D<const float> C_2d{
+        state.context_merged.data, {B * T, D}, {D, 1}};
+    Tensor2D<const float> dO_2d{
+        dO.data, {B * T, D}, {D, 1}};
+    Tensor2D<float> dC_2d{
+        d_context_merged.data, {B * T, D}, {D, 1}};
+
+    ops::LinearParams lp;
+    lp.weight = params.W_o;
+    lp.bias = params.b_o;
+    lp.use_bias = config.use_bias;
+
+    ops::LinearGrads linear_grads;
+    linear_grads.d_weight = grads.dW_o;
+    linear_grads.d_bias = grads.db_o;
+    GPT_RETURN_IF_ERROR(
+        ops::linear_backward(C_2d, dO_2d, lp, dC_2d, linear_grads, stream));
+  }
+
+  // Step 8: merge-heads backward.
+  GPT_RETURN_IF_ERROR(
+      split_merged_heads_grad_f32(d_context_merged, d_context, H, stream));
+
+  // Step 7: Context = P @ V.
+  {
+    Tensor3D<float> dC_3d{
+        d_context.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+    Tensor3D<float> V_T_3d{
+        state.V.data, {B * H, Dh, T}, {T * Dh, 1, Dh}};
+    Tensor3D<float> dP_3d{
+        dP.data, {B * H, T, T}, {T * T, T, 1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::batched_gemm_f32(dC_3d, V_T_3d, dP_3d, 1.0f, 0.0f, stream));
+
+    Tensor3D<float> P_T_3d{
+        state.probs.data, {B * H, T, T}, {T * T, 1, T}};
+    Tensor3D<float> dV_3d{
+        dV.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::batched_gemm_f32(P_T_3d, dC_3d, dV_3d, 1.0f, 0.0f, stream));
+  }
+
+  // Step 6: softmax backward, then score-scale backward.
+  {
+    Tensor2D<const float> dP_2d{dP.data, {B * H * T, T}, {T, 1}};
+    Tensor2D<const float> P_2d{state.probs.data, {B * H * T, T}, {T, 1}};
+    Tensor2D<float> dS_2d{dS.data, {B * H * T, T}, {T, 1}};
+    GPT_RETURN_IF_ERROR(
+        ops::masked_softmax_backward(dP_2d, P_2d, dS_2d, stream));
+    GPT_RETURN_IF_ERROR(scale_scores_grad_f32(dS, config.scale(), stream));
+  }
+
+  // Step 3-4: Scores = Q @ K^T.
+  {
+    Tensor3D<float> dS_3d{
+        dS.data, {B * H, T, T}, {T * T, T, 1}};
+    Tensor3D<float> K_3d{
+        state.K.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+    Tensor3D<float> dQ_3d{
+        dQ.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::batched_gemm_f32(dS_3d, K_3d, dQ_3d, 1.0f, 0.0f, stream));
+
+    Tensor3D<float> dS_T_3d{
+        dS.data, {B * H, T, T}, {T * T, 1, T}};
+    Tensor3D<float> Q_3d{
+        state.Q.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+    Tensor3D<float> dK_3d{
+        dK.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::batched_gemm_f32(dS_T_3d, Q_3d, dK_3d, 1.0f, 0.0f, stream));
+  }
+
+  // Step 2: pack dQ/dK/dV back into flat QKV gradient layout.
+  GPT_RETURN_IF_ERROR(merge_qkv_grads_f32(dQ, dK, dV, dQKV, stream));
+
+  // Step 1: QKV projection backward.
+  {
+    Tensor2D<const float> X_2d{X.data, {B * T, D}, {D, 1}};
+    Tensor2D<const float> dQKV_2d{
+        dQKV.data, {B * T, 3 * D}, {3 * D, 1}};
+    Tensor2D<float> dX_2d{dX.data, {B * T, D}, {D, 1}};
+
+    ops::LinearParams lp;
+    lp.weight = params.W_qkv;
+    lp.bias = params.b_qkv;
+    lp.use_bias = config.use_bias;
+
+    ops::LinearGrads linear_grads;
+    linear_grads.d_weight = grads.dW_qkv;
+    linear_grads.d_bias = grads.db_qkv;
+    GPT_RETURN_IF_ERROR(
+        ops::linear_backward(X_2d, dQKV_2d, lp, dX_2d, linear_grads, stream));
+  }
+
+  return Status::Ok();
 }
 
 }  // namespace attention
