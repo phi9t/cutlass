@@ -287,9 +287,11 @@ Status gemm_bf16(Tensor2D<__nv_bfloat16> A, Tensor2D<__nv_bfloat16> B,
 Status batched_gemm_f32(Tensor3D<float> A, Tensor3D<float> B,
                         Tensor3D<float> C, float alpha, float beta,
                         const CudaStream& stream, GemmBackend backend) {
+  if (backend == GemmBackend::kCublasLt) {
+    return batched_gemm_f32_cublaslt(A, B, C, alpha, beta, stream);
+  }
   if (backend != GemmBackend::kCutlass) {
-    return Status(StatusCode::kNotImplemented,
-                  "Only CUTLASS backend implemented here");
+    return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
   if (A.shape[0] != B.shape[0] || A.shape[0] != C.shape[0]) {
     return Status(StatusCode::kInvalidArgument,
