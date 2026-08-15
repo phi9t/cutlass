@@ -26,6 +26,7 @@ cc_library(
     srcs = ["trainer.cc"],
     deps = [
         ":optimizer",
+        "//src/checkpoint",
         "//src/core",
         "//src/dist:ddp",
         "//src/dist:nccl_context",

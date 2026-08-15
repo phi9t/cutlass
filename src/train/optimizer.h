@@ -38,6 +38,10 @@ class AdamW {
   void advance_step() { ++step_; }
 
   [[nodiscard]] int64_t current_step() const { return step_; }
+  void set_step(int64_t step) { step_ = step; }
+
+  [[nodiscard]] float* first_moment() const { return m_; }
+  [[nodiscard]] float* second_moment() const { return v_; }
 
   void release();
   ~AdamW();

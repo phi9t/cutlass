@@ -11,10 +11,12 @@
 //   6. Metrics logging
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "src/core/status.h"
 #include "src/core/stream.h"
+#include "src/checkpoint/checkpoint.h"
 #include "src/dist/ddp.h"
 #include "src/dist/nccl_context.h"
 #include "src/model/gpt_config.h"
@@ -54,6 +56,12 @@ class Trainer {
   Status train_step(Tensor2D<const int32_t> input_ids,
                     Tensor2D<const int32_t> targets,
                     StepMetrics& metrics);
+
+  Status save_checkpoint(const std::string& dir,
+                         int64_t dataset_cursor,
+                         const std::string& config_json);
+  Status load_checkpoint(const std::string& dir,
+                         checkpoint::CheckpointMetadata& meta);
 
   [[nodiscard]] int64_t current_step() const { return step_; }
 

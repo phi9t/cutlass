@@ -77,12 +77,15 @@ closed test-first:
 - `src/train/main.cc` now loads an int32 token file through
   `TokenDataset`/`Batcher`, stages batches to device, and runs a real
   `Trainer::train_step` loop with environment overrides for local smoke runs.
+- `Trainer::{save_checkpoint,load_checkpoint}` now save and restore model
+  parameters, AdamW moment buffers, trainer/optimizer step, and metadata.
+  `tests/integration/resume_equivalence_test.cc` verifies bitwise-identical
+  losses for uninterrupted vs checkpoint/resume training.
 
 ## Next recommended scaffold frontier
 
-The next larger follow-on work is the integration/runtime layer: adding
-resume-equivalence coverage and defining the DDP/NCCL multi-rank rendezvous
-policy.
+The next larger follow-on work is the distributed runtime layer: defining the
+DDP/NCCL multi-rank rendezvous policy.
 
 The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is
 wired. The only initialized `NcclContext` today is `world_size == 1`, where

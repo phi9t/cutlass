@@ -310,6 +310,46 @@ Status Trainer::train_step(Tensor2D<const int32_t> input_ids,
   return Status::Ok();
 }
 
+Status Trainer::save_checkpoint(const std::string& dir,
+                                int64_t dataset_cursor,
+                                const std::string& config_json) {
+  if (param_buffer_ == nullptr || optimizer_.first_moment() == nullptr ||
+      optimizer_.second_moment() == nullptr) {
+    return Status(StatusCode::kInvalidArgument,
+                  "Trainer::save_checkpoint: trainer not initialized");
+  }
+
+  checkpoint::CheckpointMetadata meta;
+  meta.step = step_;
+  meta.param_count = param_count_;
+  meta.dataset_cursor = dataset_cursor;
+  meta.config_json = config_json;
+  return checkpoint::save_checkpoint(dir, param_buffer_,
+                                     optimizer_.first_moment(),
+                                     optimizer_.second_moment(),
+                                     param_count_, meta);
+}
+
+Status Trainer::load_checkpoint(const std::string& dir,
+                                checkpoint::CheckpointMetadata& meta) {
+  if (param_buffer_ == nullptr || optimizer_.first_moment() == nullptr ||
+      optimizer_.second_moment() == nullptr) {
+    return Status(StatusCode::kInvalidArgument,
+                  "Trainer::load_checkpoint: trainer not initialized");
+  }
+
+  GPT_RETURN_IF_ERROR(checkpoint::load_checkpoint(
+      dir, param_buffer_, optimizer_.first_moment(), optimizer_.second_moment(),
+      param_count_, meta));
+  if (meta.param_count != param_count_) {
+    return Status(StatusCode::kInvalidArgument,
+                  "Trainer::load_checkpoint: param_count mismatch");
+  }
+  step_ = meta.step;
+  optimizer_.set_step(meta.step);
+  return Status::Ok();
+}
+
 void Trainer::release_forward_state() {
   for (float* ptr : fwd_state_buffers_) {
     cudaFree(ptr);
