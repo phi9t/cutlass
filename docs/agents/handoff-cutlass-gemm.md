@@ -21,7 +21,7 @@ Completed on local `main`:
 Verification, inside the hermetic rootfs on the B200:
 - `scripts/run_local_gpu_smoke.sh --with-gtest` -> **PASS**
 - preflight PASS, CUTLASS GEMM smoke PASS, gpu-tagged `//src/...` gtest rung
-  **15 / 15 PASS**
+  **16 / 16 PASS**
 
 This file is now a completion record plus context for the next scaffold work.
 
@@ -61,12 +61,16 @@ closed test-first:
 - `src/model/gpt_model.cc::gpt_backward` now supports one or more transformer
   layers by saving each block input in `GPTForwardState::block_inputs` and
   walking `block_backward` in reverse.
+- `src/train/trainer.cc::train_step` now owns GPT forward-state allocation,
+  computes cross-entropy gradients, runs `gpt_backward`, and feeds real
+  gradients into AdamW. `src/train/trainer_test.cc` covers two public
+  `Trainer::train_step` calls on a tiny GPU model.
 
 ## Next recommended scaffold frontier
 
-The next larger follow-on work is the trainer/integration layer: wiring a real
-training step through loss backward, `gpt_backward`, optimizer, checkpoint, and
-DDP/NCCL policy.
+The next larger follow-on work is the integration/runtime layer: wiring
+`src/train/main.cc` to real data batches, adding checkpoint save/resume coverage,
+and defining the DDP/NCCL multi-rank rendezvous policy.
 
 The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is
 wired. The only initialized `NcclContext` today is `world_size == 1`, where

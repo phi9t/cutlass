@@ -11,6 +11,7 @@
 //   6. Metrics logging
 
 #include <cstdint>
+#include <vector>
 
 #include "src/core/status.h"
 #include "src/core/stream.h"
@@ -76,8 +77,15 @@ class Trainer {
 
   float* param_buffer_ = nullptr;
   float* grad_buffer_ = nullptr;
+  float* d_logits_buffer_ = nullptr;
+  std::vector<float*> fwd_state_buffers_;
+  int64_t state_capacity_B_ = 0;
+  int64_t state_capacity_T_ = 0;
   int64_t param_count_ = 0;
   int64_t step_ = 0;
+
+  Status ensure_forward_state(int64_t B, int64_t T);
+  void release_forward_state();
 };
 
 }  // namespace train

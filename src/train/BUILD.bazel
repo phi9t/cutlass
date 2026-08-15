@@ -59,3 +59,16 @@ cc_test(
     ],
     tags = ["gpu"],
 )
+
+cc_test(
+    name = "trainer_test",
+    srcs = ["trainer_test.cc"],
+    size = "small",
+    timeout = "moderate",
+    deps = [
+        ":trainer",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+    tags = ["gpu"],
+)
