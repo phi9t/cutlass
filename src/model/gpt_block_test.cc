@@ -3,7 +3,7 @@
 // Tests cover:
 //   - Block forward: compiles and links with full workspace
 //   - Block forward: output shape matches input shape
-//   - Block backward: returns kNotImplemented (current state)
+//   - Block backward: dX matches finite differences of CPU block forward
 //   - CPU-only: LayerNorm → Attention → Residual sub-block structure
 //   - CPU-only: MLP sub-block (fc1 → GELU → fc2) structure
 
@@ -19,6 +19,62 @@
 
 using namespace gpt;
 using namespace gpt::model;
+
+namespace {
+
+std::vector<float> cpu_block_forward_ref(
+    const std::vector<float>& x,
+    const std::vector<float>& ln1_gamma,
+    const std::vector<float>& ln1_beta,
+    const std::vector<float>& W_qkv,
+    const std::vector<float>& W_o,
+    const std::vector<float>& ln2_gamma,
+    const std::vector<float>& ln2_beta,
+    const std::vector<float>& fc1_w,
+    const std::vector<float>& fc2_w,
+    int64_t B,
+    int64_t T,
+    int64_t D,
+    int64_t H,
+    int64_t mlp_hidden,
+    float eps) {
+  auto ln1 = test::cpu_layernorm_forward(
+      x.data(), ln1_gamma.data(), ln1_beta.data(), eps, B * T, D);
+  auto attn = test::cpu_attention_forward(
+      ln1.y.data(), W_qkv.data(), nullptr, W_o.data(), nullptr,
+      B, T, D, H, /*causal=*/true, /*use_bias=*/false);
+  std::vector<float> residual1(B * T * D);
+  for (int64_t i = 0; i < B * T * D; ++i) {
+    residual1[i] = x[i] + attn.output[i];
+  }
+
+  auto ln2 = test::cpu_layernorm_forward(
+      residual1.data(), ln2_gamma.data(), ln2_beta.data(), eps, B * T, D);
+  auto fc1 = test::cpu_linear_forward(
+      ln2.y.data(), fc1_w.data(), nullptr,
+      B * T, D, mlp_hidden, /*use_bias=*/false);
+  std::vector<float> gelu(B * T * mlp_hidden);
+  for (int64_t i = 0; i < B * T * mlp_hidden; ++i) {
+    gelu[i] = test::cpu_gelu(fc1[i]);
+  }
+  auto fc2 = test::cpu_linear_forward(
+      gelu.data(), fc2_w.data(), nullptr,
+      B * T, mlp_hidden, D, /*use_bias=*/false);
+
+  std::vector<float> output(B * T * D);
+  for (int64_t i = 0; i < B * T * D; ++i) {
+    output[i] = residual1[i] + fc2[i];
+  }
+  return output;
+}
+
+float dot_loss(const std::vector<float>& y, const std::vector<float>& dy) {
+  float loss = 0.0f;
+  for (size_t i = 0; i < y.size(); ++i) loss += y[i] * dy[i];
+  return loss;
+}
+
+}  // namespace
 
 // --- Config/param structure tests (CPU-only, Tier A) ---
 
@@ -270,23 +326,200 @@ TEST_F(GPTBlockGPUTest, ForwardCompiles) {
   cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
-TEST_F(GPTBlockGPUTest, BackwardReturnsNotImplemented) {
+TEST_F(GPTBlockGPUTest, BackwardDXMatchesFiniteDifference) {
+  const int64_t B = 1, T = 2, D = 4, H = 2, Dh = 2;
+  const int64_t mlp_hidden = 8;
+
   GPTConfig config;
+  config.vocab_size = 16;
+  config.max_seq_len = 4;
+  config.n_layers = 1;
   config.d_model = 4;
   config.n_heads = 2;
   config.mlp_hidden = 8;
+  config.use_bias = false;
+  config.layernorm_eps = 1e-5f;
 
-  LayerParams params{};
+  test::SimpleRng rng(7);
+  std::vector<float> h_x(B * T * D);
+  std::vector<float> h_dout(B * T * D);
+  rng.fill(h_x, 0.2f);
+  rng.fill(h_dout, 0.3f);
+
+  std::vector<float> h_g1(D, 1.0f), h_b1(D, 0.0f);
+  std::vector<float> h_g2(D, 1.0f), h_b2(D, 0.0f);
+  std::vector<float> h_W_qkv(3 * D * D), h_W_o(D * D);
+  std::vector<float> h_fc1_w(mlp_hidden * D), h_fc2_w(D * mlp_hidden);
+  rng.fill(h_W_qkv, 0.2f);
+  rng.fill(h_W_o, 0.2f);
+  rng.fill(h_fc1_w, 0.2f);
+  rng.fill(h_fc2_w, 0.2f);
+
+  auto finite_diff_dx = std::vector<float>(B * T * D);
+  const float eps = 1e-2f;
+  for (int64_t i = 0; i < B * T * D; ++i) {
+    float original = h_x[i];
+    h_x[i] = original + eps;
+    auto y_plus = cpu_block_forward_ref(
+        h_x, h_g1, h_b1, h_W_qkv, h_W_o, h_g2, h_b2,
+        h_fc1_w, h_fc2_w, B, T, D, H, mlp_hidden, config.layernorm_eps);
+    h_x[i] = original - eps;
+    auto y_minus = cpu_block_forward_ref(
+        h_x, h_g1, h_b1, h_W_qkv, h_W_o, h_g2, h_b2,
+        h_fc1_w, h_fc2_w, B, T, D, H, mlp_hidden, config.layernorm_eps);
+    h_x[i] = original;
+    finite_diff_dx[i] =
+        (dot_loss(y_plus, h_dout) - dot_loss(y_minus, h_dout)) / (2.0f * eps);
+  }
+
+  auto alloc = [](size_t bytes) {
+    float* p = nullptr;
+    cudaMalloc(&p, bytes);
+    return p;
+  };
+
+  float* d_x = alloc(B * T * D * sizeof(float));
+  float* d_dout = alloc(B * T * D * sizeof(float));
+  float* d_output = alloc(B * T * D * sizeof(float));
+  float* d_dx = alloc(B * T * D * sizeof(float));
+
+  float* d_g1 = alloc(D * sizeof(float));
+  float* d_b1 = alloc(D * sizeof(float));
+  float* d_g2 = alloc(D * sizeof(float));
+  float* d_b2 = alloc(D * sizeof(float));
+  float* d_W_qkv = alloc(3 * D * D * sizeof(float));
+  float* d_W_o = alloc(D * D * sizeof(float));
+  float* d_fc1_w = alloc(mlp_hidden * D * sizeof(float));
+  float* d_fc2_w = alloc(D * mlp_hidden * sizeof(float));
+
+  float* d_dg1 = alloc(D * sizeof(float));
+  float* d_db1 = alloc(D * sizeof(float));
+  float* d_dg2 = alloc(D * sizeof(float));
+  float* d_db2 = alloc(D * sizeof(float));
+  float* d_dW_qkv = alloc(3 * D * D * sizeof(float));
+  float* d_dW_o = alloc(D * D * sizeof(float));
+  float* d_dfc1_w = alloc(mlp_hidden * D * sizeof(float));
+  float* d_dfc2_w = alloc(D * mlp_hidden * sizeof(float));
+
+  float* d_ln1_out = alloc(B * T * D * sizeof(float));
+  float* d_ln2_out = alloc(B * T * D * sizeof(float));
+  float* d_ln1_mean = alloc(B * T * sizeof(float));
+  float* d_ln1_inv = alloc(B * T * sizeof(float));
+  float* d_ln2_mean = alloc(B * T * sizeof(float));
+  float* d_ln2_inv = alloc(B * T * sizeof(float));
+  float* d_attn_out = alloc(B * T * D * sizeof(float));
+  float* d_fc1_out = alloc(B * T * mlp_hidden * sizeof(float));
+  float* d_gelu_out = alloc(B * T * mlp_hidden * sizeof(float));
+  float* d_fc2_out = alloc(B * T * D * sizeof(float));
+  float* d_qkv = alloc(B * T * 3 * D * sizeof(float));
+  float* d_Q = alloc(B * H * T * Dh * sizeof(float));
+  float* d_K = alloc(B * H * T * Dh * sizeof(float));
+  float* d_V = alloc(B * H * T * Dh * sizeof(float));
+  float* d_scores = alloc(B * H * T * T * sizeof(float));
+  float* d_probs = alloc(B * H * T * T * sizeof(float));
+  float* d_ctx = alloc(B * H * T * Dh * sizeof(float));
+  float* d_merged = alloc(B * T * D * sizeof(float));
+
+  cudaMemcpy(d_x, h_x.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_dout, h_dout.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_g1, h_g1.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b1, h_b1.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_g2, h_g2.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b2, h_b2.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_W_qkv, h_W_qkv.data(), 3 * D * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_W_o, h_W_o.data(), D * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_fc1_w, h_fc1_w.data(), mlp_hidden * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_fc2_w, h_fc2_w.data(), D * mlp_hidden * sizeof(float), cudaMemcpyHostToDevice);
+
+  cudaMemset(d_dg1, 0, D * sizeof(float));
+  cudaMemset(d_db1, 0, D * sizeof(float));
+  cudaMemset(d_dg2, 0, D * sizeof(float));
+  cudaMemset(d_db2, 0, D * sizeof(float));
+  cudaMemset(d_dW_qkv, 0, 3 * D * D * sizeof(float));
+  cudaMemset(d_dW_o, 0, D * D * sizeof(float));
+  cudaMemset(d_dfc1_w, 0, mlp_hidden * D * sizeof(float));
+  cudaMemset(d_dfc2_w, 0, D * mlp_hidden * sizeof(float));
+
+  LayerParams params;
+  params.ln1.gamma = {d_g1, {D}, {1}};
+  params.ln1.beta = {d_b1, {D}, {1}};
+  params.ln1.eps = config.layernorm_eps;
+  params.ln2.gamma = {d_g2, {D}, {1}};
+  params.ln2.beta = {d_b2, {D}, {1}};
+  params.ln2.eps = config.layernorm_eps;
+  params.attn.W_qkv = {d_W_qkv, {3 * D, D}, {D, 1}};
+  params.attn.b_qkv = {nullptr, {3 * D}, {1}};
+  params.attn.W_o = {d_W_o, {D, D}, {D, 1}};
+  params.attn.b_o = {nullptr, {D}, {1}};
+  params.fc1.weight = {d_fc1_w, {mlp_hidden, D}, {D, 1}};
+  params.fc1.bias = {nullptr, {mlp_hidden}, {1}};
+  params.fc1.use_bias = false;
+  params.fc2.weight = {d_fc2_w, {D, mlp_hidden}, {mlp_hidden, 1}};
+  params.fc2.bias = {nullptr, {D}, {1}};
+  params.fc2.use_bias = false;
+
   BlockForwardState state{};
+  state.ln1_out = {d_ln1_out, {B, T, D}, {T * D, D, 1}};
+  state.ln2_out = {d_ln2_out, {B, T, D}, {T * D, D, 1}};
+  state.ln1_state.mean = {d_ln1_mean, {B * T}, {1}};
+  state.ln1_state.inv_std = {d_ln1_inv, {B * T}, {1}};
+  state.ln2_state.mean = {d_ln2_mean, {B * T}, {1}};
+  state.ln2_state.inv_std = {d_ln2_inv, {B * T}, {1}};
+  state.attn_out = {d_attn_out, {B, T, D}, {T * D, D, 1}};
+  state.fc1_out = {d_fc1_out, {B, T, mlp_hidden}, {T * mlp_hidden, mlp_hidden, 1}};
+  state.gelu_out = {d_gelu_out, {B, T, mlp_hidden}, {T * mlp_hidden, mlp_hidden, 1}};
+  state.fc2_out = {d_fc2_out, {B, T, D}, {T * D, D, 1}};
+  state.attn_state.qkv = {d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
+  state.attn_state.Q = {d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  state.attn_state.K = {d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  state.attn_state.V = {d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  state.attn_state.scores = {d_scores, {B, H, T, T}, {H * T * T, T * T, T, 1}};
+  state.attn_state.probs = {d_probs, {B, H, T, T}, {H * T * T, T * T, T, 1}};
+  state.attn_state.context = {d_ctx, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  state.attn_state.context_merged = {d_merged, {B, T, D}, {T * D, D, 1}};
+
   GPTGrads::LayerGrads grads{};
+  grads.d_ln1_gamma = {d_dg1, {D}, {1}};
+  grads.d_ln1_beta = {d_db1, {D}, {1}};
+  grads.attn.dW_qkv = {d_dW_qkv, {3 * D, D}, {D, 1}};
+  grads.attn.db_qkv = {nullptr, {3 * D}, {1}};
+  grads.attn.dW_o = {d_dW_o, {D, D}, {D, 1}};
+  grads.attn.db_o = {nullptr, {D}, {1}};
+  grads.d_ln2_gamma = {d_dg2, {D}, {1}};
+  grads.d_ln2_beta = {d_db2, {D}, {1}};
+  grads.fc1.d_weight = {d_dfc1_w, {mlp_hidden, D}, {D, 1}};
+  grads.fc1.d_bias = {nullptr, {mlp_hidden}, {1}};
+  grads.fc2.d_weight = {d_dfc2_w, {D, mlp_hidden}, {mlp_hidden, 1}};
+  grads.fc2.d_bias = {nullptr, {D}, {1}};
 
-  Tensor3D<const float> d_output{nullptr, {1, 2, 4}, {8, 4, 1}};
-  Tensor3D<const float> x{nullptr, {1, 2, 4}, {8, 4, 1}};
-  Tensor3D<float> dx{nullptr, {1, 2, 4}, {8, 4, 1}};
+  Tensor3D<const float> x{d_x, {B, T, D}, {T * D, D, 1}};
+  Tensor3D<float> output{d_output, {B, T, D}, {T * D, D, 1}};
+  Tensor3D<const float> d_output_view{d_dout, {B, T, D}, {T * D, D, 1}};
+  Tensor3D<float> dx{d_dx, {B, T, D}, {T * D, D, 1}};
 
-  auto status = block_backward(d_output, x, config, params, state, dx,
-                                grads, stream_);
-  EXPECT_EQ(status.code(), StatusCode::kNotImplemented);
+  ASSERT_TRUE(block_forward(x, config, params, output, state, stream_).ok());
+  auto status = block_backward(d_output_view, x, config, params, state, dx,
+                               grads, stream_);
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_TRUE(stream_.synchronize().ok());
+
+  std::vector<float> h_dx(B * T * D);
+  cudaMemcpy(h_dx.data(), d_dx, B * T * D * sizeof(float), cudaMemcpyDeviceToHost);
+  EXPECT_TRUE(test::vectors_near(h_dx, finite_diff_dx, 3e-2f, 5e-2f))
+      << "block backward dX mismatch";
+
+  cudaFree(d_x); cudaFree(d_dout); cudaFree(d_output); cudaFree(d_dx);
+  cudaFree(d_g1); cudaFree(d_b1); cudaFree(d_g2); cudaFree(d_b2);
+  cudaFree(d_W_qkv); cudaFree(d_W_o); cudaFree(d_fc1_w); cudaFree(d_fc2_w);
+  cudaFree(d_dg1); cudaFree(d_db1); cudaFree(d_dg2); cudaFree(d_db2);
+  cudaFree(d_dW_qkv); cudaFree(d_dW_o); cudaFree(d_dfc1_w); cudaFree(d_dfc2_w);
+  cudaFree(d_ln1_out); cudaFree(d_ln2_out);
+  cudaFree(d_ln1_mean); cudaFree(d_ln1_inv);
+  cudaFree(d_ln2_mean); cudaFree(d_ln2_inv);
+  cudaFree(d_attn_out); cudaFree(d_fc1_out);
+  cudaFree(d_gelu_out); cudaFree(d_fc2_out);
+  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
+  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
 // --- CPU-only: MLP sub-block structure verification ---

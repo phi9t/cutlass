@@ -52,11 +52,13 @@ closed test-first:
 - `src/attention/attention.cc::attention_backward` now reverses the forward path
   using existing linear, softmax, and batched GEMM primitives plus small
   attention-local gradient layout kernels.
+- `src/model/gpt_block.cc::block_backward` now reverses the transformer block
+  with residual-gradient fanout, MLP backward, LN backward, and attention
+  backward.
 
 ## Next recommended scaffold frontier
 
-Block backward and GPT backward remain larger follow-on work:
-- `src/model/gpt_block.cc::block_backward` returns `kNotImplemented`.
+GPT backward remains the next larger follow-on work:
 - `src/model/gpt_model.cc::gpt_backward` returns `kNotImplemented`.
 
 The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is

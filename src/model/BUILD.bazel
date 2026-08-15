@@ -36,6 +36,7 @@ cc_library(
         ":gpt_params",
         "//src/attention",
         "//src/core",
+        "//src/kernels:elementwise",
         "//src/ops:gelu",
         "//src/ops:layernorm",
         "//src/ops:linear",

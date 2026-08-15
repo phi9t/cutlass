@@ -2,6 +2,9 @@
 
 #include "src/model/gpt_block.h"
 
+#include <cuda_runtime.h>
+#include <vector>
+
 #include "src/attention/attention.h"
 #include "src/kernels/elementwise.h"
 #include "src/ops/gelu.h"
@@ -10,6 +13,34 @@
 
 namespace gpt {
 namespace model {
+
+namespace {
+
+class DeviceScratch {
+ public:
+  DeviceScratch() = default;
+  ~DeviceScratch() {
+    for (float* ptr : buffers_) cudaFree(ptr);
+  }
+
+  Result<float*> allocate(int64_t count) {
+    float* ptr = nullptr;
+    cudaError_t err = cudaMalloc(&ptr, static_cast<size_t>(count) * sizeof(float));
+    if (err != cudaSuccess) {
+      return Status(StatusCode::kCudaError, cudaGetErrorString(err));
+    }
+    buffers_.push_back(ptr);
+    return ptr;
+  }
+
+  DeviceScratch(const DeviceScratch&) = delete;
+  DeviceScratch& operator=(const DeviceScratch&) = delete;
+
+ private:
+  std::vector<float*> buffers_;
+};
+
+}  // namespace
 
 Status block_forward(Tensor3D<const float> x,
                      const GPTConfig& config,
@@ -115,20 +146,161 @@ Status block_backward(Tensor3D<const float> d_output,
                       Tensor3D<float> dx,
                       GPTGrads::LayerGrads& grads,
                       const CudaStream& stream) {
-  // TODO(m6): Implement block backward.
-  // Reverse of forward:
-  //   1. Residual split: d_fc2_out = d_output, d_residual2 = d_output
-  //   2. fc2 backward
-  //   3. GELU backward
-  //   4. fc1 backward
-  //   5. LN2 backward
-  //   6. d_residual2 += d_ln2_input
-  //   7. Attention backward
-  //   8. LN1 backward
-  //   9. dx = d_residual1 + d_ln1_input
+  int64_t B = x.shape[0];
+  int64_t T = x.shape[1];
+  int64_t D = x.shape[2];
+  int64_t M = config.mlp_hidden;
+  int64_t n = B * T * D;
+  int64_t mlp_n = B * T * M;
 
-  return Status(StatusCode::kNotImplemented,
-                "block_backward not yet implemented");
+  DeviceScratch scratch;
+  auto residual1_ptr = scratch.allocate(n);
+  if (!residual1_ptr.ok()) return residual1_ptr.status();
+  auto d_residual2_ptr = scratch.allocate(n);
+  if (!d_residual2_ptr.ok()) return d_residual2_ptr.status();
+  auto d_fc2_ptr = scratch.allocate(n);
+  if (!d_fc2_ptr.ok()) return d_fc2_ptr.status();
+  auto d_gelu_ptr = scratch.allocate(mlp_n);
+  if (!d_gelu_ptr.ok()) return d_gelu_ptr.status();
+  auto d_fc1_ptr = scratch.allocate(mlp_n);
+  if (!d_fc1_ptr.ok()) return d_fc1_ptr.status();
+  auto d_ln2_ptr = scratch.allocate(n);
+  if (!d_ln2_ptr.ok()) return d_ln2_ptr.status();
+  auto d_residual1_ptr = scratch.allocate(n);
+  if (!d_residual1_ptr.ok()) return d_residual1_ptr.status();
+  auto d_attn_ptr = scratch.allocate(n);
+  if (!d_attn_ptr.ok()) return d_attn_ptr.status();
+  auto d_ln1_ptr = scratch.allocate(n);
+  if (!d_ln1_ptr.ok()) return d_ln1_ptr.status();
+
+  Tensor3D<float> residual1{
+      residual1_ptr.value(), {B, T, D}, {T * D, D, 1}};
+  Tensor3D<float> d_residual2{
+      d_residual2_ptr.value(), {B, T, D}, {T * D, D, 1}};
+  Tensor3D<float> d_residual1{
+      d_residual1_ptr.value(), {B, T, D}, {T * D, D, 1}};
+  Tensor3D<float> d_attn{
+      d_attn_ptr.value(), {B, T, D}, {T * D, D, 1}};
+  Tensor3D<float> d_ln1{
+      d_ln1_ptr.value(), {B, T, D}, {T * D, D, 1}};
+
+  // Reconstruct the first residual activation consumed by LN2:
+  // residual1 = x + attn_out.
+  {
+    Tensor1D<const float> x_flat{x.data, {n}, {1}};
+    Tensor1D<const float> attn_flat{state.attn_out.data, {n}, {1}};
+    Tensor1D<float> residual_flat{residual1.data, {n}, {1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::vec_add_f32(x_flat, attn_flat, residual_flat, stream));
+  }
+
+  // The final residual add fans d_output to both fc2_out and residual1.
+  {
+    Tensor1D<const float> d_out_flat{d_output.data, {n}, {1}};
+    Tensor1D<float> d_fc2_flat{d_fc2_ptr.value(), {n}, {1}};
+    Tensor1D<float> d_residual2_flat{d_residual2.data, {n}, {1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::vec_scale_f32(d_out_flat, 1.0f, d_fc2_flat, stream));
+    GPT_RETURN_IF_ERROR(
+        kernels::vec_scale_f32(d_out_flat, 1.0f, d_residual2_flat, stream));
+  }
+
+  // fc2 backward: d_fc2_out -> d_gelu_out.
+  {
+    Tensor2D<const float> gelu_2d{
+        state.gelu_out.data, {B * T, M}, {M, 1}};
+    Tensor2D<const float> d_fc2_2d{
+        d_fc2_ptr.value(), {B * T, D}, {D, 1}};
+    Tensor2D<float> d_gelu_2d{
+        d_gelu_ptr.value(), {B * T, M}, {M, 1}};
+    GPT_RETURN_IF_ERROR(ops::linear_backward(
+        gelu_2d, d_fc2_2d, params.fc2, d_gelu_2d, grads.fc2, stream));
+  }
+
+  // GELU backward.
+  {
+    Tensor1D<const float> d_gelu_flat{d_gelu_ptr.value(), {mlp_n}, {1}};
+    Tensor1D<const float> fc1_flat{state.fc1_out.data, {mlp_n}, {1}};
+    Tensor1D<float> d_fc1_flat{d_fc1_ptr.value(), {mlp_n}, {1}};
+    GPT_RETURN_IF_ERROR(
+        ops::gelu_backward(d_gelu_flat, fc1_flat, d_fc1_flat, stream));
+  }
+
+  // fc1 backward: d_fc1_out -> d_ln2_out.
+  {
+    Tensor2D<const float> ln2_2d{
+        state.ln2_out.data, {B * T, D}, {D, 1}};
+    Tensor2D<const float> d_fc1_2d{
+        d_fc1_ptr.value(), {B * T, M}, {M, 1}};
+    Tensor2D<float> d_ln2_2d{
+        d_ln2_ptr.value(), {B * T, D}, {D, 1}};
+    GPT_RETURN_IF_ERROR(ops::linear_backward(
+        ln2_2d, d_fc1_2d, params.fc1, d_ln2_2d, grads.fc1, stream));
+  }
+
+  // LN2 backward: d_ln2_out -> d_residual1_from_ln2.
+  {
+    Tensor2D<const float> d_ln2_2d{
+        d_ln2_ptr.value(), {B * T, D}, {D, 1}};
+    Tensor2D<const float> residual1_2d{
+        residual1.data, {B * T, D}, {D, 1}};
+    Tensor2D<float> d_residual1_2d{
+        d_residual1.data, {B * T, D}, {D, 1}};
+    GPT_RETURN_IF_ERROR(ops::layernorm_backward(
+        d_ln2_2d, residual1_2d, params.ln2, state.ln2_state,
+        d_residual1_2d, grads.d_ln2_gamma, grads.d_ln2_beta, stream));
+  }
+
+  // Add direct residual branch from final output: d_residual1 += d_residual2.
+  {
+    Tensor1D<const float> from_ln2{d_residual1.data, {n}, {1}};
+    Tensor1D<const float> direct{d_residual2.data, {n}, {1}};
+    Tensor1D<float> total{d_residual1.data, {n}, {1}};
+    GPT_RETURN_IF_ERROR(kernels::vec_add_f32(from_ln2, direct, total, stream));
+  }
+
+  // The first residual add fans d_residual1 to x and attention output.
+  {
+    Tensor1D<const float> d_residual1_flat{d_residual1.data, {n}, {1}};
+    Tensor1D<float> d_attn_flat{d_attn.data, {n}, {1}};
+    GPT_RETURN_IF_ERROR(
+        kernels::vec_scale_f32(d_residual1_flat, 1.0f, d_attn_flat, stream));
+  }
+
+  attention::AttentionConfig attn_cfg;
+  attn_cfg.d_model = config.d_model;
+  attn_cfg.n_heads = config.n_heads;
+  attn_cfg.head_dim = config.head_dim();
+  attn_cfg.use_bias = config.use_bias;
+  attn_cfg.causal = true;
+
+  {
+    Tensor3D<const float> ln1_in{
+        state.ln1_out.data, {B, T, D}, {T * D, D, 1}};
+    GPT_RETURN_IF_ERROR(attention::attention_backward(
+        d_attn, ln1_in, attn_cfg, params.attn, state.attn_state,
+        d_ln1, grads.attn, stream));
+  }
+
+  // LN1 backward: d_ln1_out -> d_x_from_ln1.
+  {
+    Tensor2D<const float> d_ln1_2d{d_ln1.data, {B * T, D}, {D, 1}};
+    Tensor2D<const float> x_2d{x.data, {B * T, D}, {D, 1}};
+    Tensor2D<float> dx_2d{dx.data, {B * T, D}, {D, 1}};
+    GPT_RETURN_IF_ERROR(ops::layernorm_backward(
+        d_ln1_2d, x_2d, params.ln1, state.ln1_state,
+        dx_2d, grads.d_ln1_gamma, grads.d_ln1_beta, stream));
+  }
+
+  // Add direct residual branch from the first residual add: dx += d_residual1.
+  {
+    Tensor1D<const float> from_ln1{dx.data, {n}, {1}};
+    Tensor1D<const float> direct{d_residual1.data, {n}, {1}};
+    Tensor1D<float> total{dx.data, {n}, {1}};
+    GPT_RETURN_IF_ERROR(kernels::vec_add_f32(from_ln1, direct, total, stream));
+  }
+
+  return Status::Ok();
 }
 
 }  // namespace model
