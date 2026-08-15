@@ -55,11 +55,15 @@ closed test-first:
 - `src/model/gpt_block.cc::block_backward` now reverses the transformer block
   with residual-gradient fanout, MLP backward, LN backward, and attention
   backward.
+- `src/model/gpt_model.cc::gpt_backward` now supports zero-layer models:
+  LM-head backward, final LayerNorm backward, token embedding backward, and
+  position embedding gradients.
 
 ## Next recommended scaffold frontier
 
-GPT backward remains the next larger follow-on work:
-- `src/model/gpt_model.cc::gpt_backward` returns `kNotImplemented`.
+Multi-layer GPT backward remains the next larger follow-on work. The current
+`GPTForwardState` does not preserve per-layer block inputs, so `gpt_backward`
+still returns `kNotImplemented` when `config.n_layers != 0`.
 
 The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is
 wired. The only initialized `NcclContext` today is `world_size == 1`, where

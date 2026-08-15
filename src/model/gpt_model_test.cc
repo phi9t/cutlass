@@ -5,7 +5,7 @@
 //   - GPTForwardState: struct layout
 //   - GPTGrads: struct layout
 //   - GPU compile check: gpt_forward with full workspace
-//   - gpt_backward: returns kNotImplemented
+//   - gpt_backward: zero-layer model computes embedding, final LN, and LM grads
 //   - CPU-only: end-to-end tiny model (embedding → block → LN → LM head)
 
 #include "gtest/gtest.h"
@@ -226,22 +226,158 @@ TEST_F(GPTModelGPUTest, ForwardZeroLayerMatchesCPUReference) {
   cudaFree(d_final); cudaFree(d_logits);
 }
 
-TEST_F(GPTModelGPUTest, BackwardReturnsNotImplemented) {
+TEST_F(GPTModelGPUTest, BackwardZeroLayerComputesGradients) {
+  const int64_t B = 1, T = 3, D = 4, vocab = 8;
+
   GPTConfig config;
-  config.d_model = 4;
+  config.vocab_size = vocab;
+  config.max_seq_len = T;
+  config.n_layers = 0;
   config.n_heads = 2;
-  config.n_layers = 1;
+  config.d_model = D;
+  config.mlp_hidden = 8;
+  config.use_bias = true;
+  config.tie_embeddings = false;
+  config.layernorm_eps = 1e-5f;
 
-  GPTParams params{};
-  GPTForwardState state{};
-  GPTGrads grads{};
+  test::SimpleRng rng(17);
+  std::vector<int32_t> h_ids = {1, 3, 5};
+  std::vector<float> h_tok(vocab * D), h_pos(T * D), h_lm(vocab * D);
+  std::vector<float> h_gamma(D, 1.0f), h_beta(D, 0.0f);
+  std::vector<float> h_dlogits(B * T * vocab);
+  rng.fill(h_tok, 0.5f);
+  rng.fill(h_pos, 0.5f);
+  rng.fill(h_lm, 0.5f);
+  rng.fill(h_dlogits, 0.2f);
 
-  Tensor2D<const float> d_logits{nullptr, {2, 16}, {16, 1}};
-  Tensor2D<const int32_t> input_ids{nullptr, {1, 2}, {2, 1}};
+  int32_t* d_ids = nullptr;
+  float *d_tok = nullptr, *d_pos = nullptr, *d_lm = nullptr;
+  float *d_gamma = nullptr, *d_beta = nullptr;
+  float *d_embed = nullptr, *d_mean = nullptr, *d_inv = nullptr;
+  float *d_final = nullptr, *d_logits = nullptr, *d_dlogits = nullptr;
+  float *d_tok_grad = nullptr, *d_pos_grad = nullptr, *d_lm_grad = nullptr;
+  float *d_gamma_grad = nullptr, *d_beta_grad = nullptr;
+  cudaMalloc(&d_ids, B * T * sizeof(int32_t));
+  cudaMalloc(&d_tok, vocab * D * sizeof(float));
+  cudaMalloc(&d_pos, T * D * sizeof(float));
+  cudaMalloc(&d_lm, vocab * D * sizeof(float));
+  cudaMalloc(&d_gamma, D * sizeof(float));
+  cudaMalloc(&d_beta, D * sizeof(float));
+  cudaMalloc(&d_embed, B * T * D * sizeof(float));
+  cudaMalloc(&d_mean, B * T * sizeof(float));
+  cudaMalloc(&d_inv, B * T * sizeof(float));
+  cudaMalloc(&d_final, B * T * D * sizeof(float));
+  cudaMalloc(&d_logits, B * T * vocab * sizeof(float));
+  cudaMalloc(&d_dlogits, B * T * vocab * sizeof(float));
+  cudaMalloc(&d_tok_grad, vocab * D * sizeof(float));
+  cudaMalloc(&d_pos_grad, T * D * sizeof(float));
+  cudaMalloc(&d_lm_grad, vocab * D * sizeof(float));
+  cudaMalloc(&d_gamma_grad, D * sizeof(float));
+  cudaMalloc(&d_beta_grad, D * sizeof(float));
+  cudaMemcpy(d_ids, h_ids.data(), B * T * sizeof(int32_t), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_tok, h_tok.data(), vocab * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_pos, h_pos.data(), T * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_lm, h_lm.data(), vocab * D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_gamma, h_gamma.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_beta, h_beta.data(), D * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_dlogits, h_dlogits.data(), B * T * vocab * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemset(d_tok_grad, 0, vocab * D * sizeof(float));
+  cudaMemset(d_pos_grad, 0, T * D * sizeof(float));
+  cudaMemset(d_lm_grad, 0, vocab * D * sizeof(float));
+  cudaMemset(d_gamma_grad, 0, D * sizeof(float));
+  cudaMemset(d_beta_grad, 0, D * sizeof(float));
 
-  auto status = gpt_backward(d_logits, input_ids, config, params, state,
-                               grads, stream_);
-  EXPECT_EQ(status.code(), StatusCode::kNotImplemented);
+  GPTParams params;
+  params.token_embedding = {d_tok, {vocab, D}, {D, 1}};
+  params.position_embedding = {d_pos, {T, D}, {D, 1}};
+  params.final_ln.gamma = {d_gamma, {D}, {1}};
+  params.final_ln.beta = {d_beta, {D}, {1}};
+  params.final_ln.eps = config.layernorm_eps;
+  params.lm_head = {d_lm, {vocab, D}, {D, 1}};
+
+  GPTForwardState state;
+  state.embed_out = {d_embed, {B, T, D}, {T * D, D, 1}};
+  state.final_ln_out = {d_final, {B, T, D}, {T * D, D, 1}};
+  state.final_ln_state.mean = {d_mean, {B * T}, {1}};
+  state.final_ln_state.inv_std = {d_inv, {B * T}, {1}};
+  state.logits = {d_logits, {B * T, vocab}, {vocab, 1}};
+
+  GPTGrads grads;
+  grads.d_token_embedding = {d_tok_grad, {vocab, D}, {D, 1}};
+  grads.d_position_embedding = {d_pos_grad, {T, D}, {D, 1}};
+  grads.d_final_ln_gamma = {d_gamma_grad, {D}, {1}};
+  grads.d_final_ln_beta = {d_beta_grad, {D}, {1}};
+  grads.d_lm_head = {d_lm_grad, {vocab, D}, {D, 1}};
+
+  Tensor2D<const int32_t> input_ids{d_ids, {B, T}, {T, 1}};
+  Tensor2D<const float> d_logits_view{d_dlogits, {B * T, vocab}, {vocab, 1}};
+
+  ASSERT_TRUE(gpt_forward(input_ids, config, params, state, stream_).ok());
+  auto status = gpt_backward(d_logits_view, input_ids, config, params, state,
+                             grads, stream_);
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_TRUE(stream_.synchronize().ok());
+
+  auto tok = test::cpu_embedding_forward(h_tok.data(), h_ids.data(), B * T, D);
+  std::vector<float> embed(B * T * D);
+  for (int64_t b = 0; b < B; ++b) {
+    for (int64_t t = 0; t < T; ++t) {
+      for (int64_t d = 0; d < D; ++d) {
+        int64_t idx = (b * T + t) * D + d;
+        embed[idx] = tok[idx] + h_pos[t * D + d];
+      }
+    }
+  }
+  auto ln = test::cpu_layernorm_forward(
+      embed.data(), h_gamma.data(), h_beta.data(), config.layernorm_eps, B * T, D);
+  auto lm_grads = test::cpu_linear_backward(
+      ln.y.data(), h_dlogits.data(), h_lm.data(), B * T, D, vocab);
+  auto ln_grads = test::cpu_layernorm_backward(
+      lm_grads.dX.data(), embed.data(), h_gamma.data(), ln.mean.data(),
+      ln.inv_std.data(), B * T, D);
+  auto tok_grads = test::cpu_embedding_backward(
+      ln_grads.dx.data(), h_ids.data(), B * T, D, vocab);
+  std::vector<float> pos_grads(T * D, 0.0f);
+  for (int64_t b = 0; b < B; ++b) {
+    for (int64_t t = 0; t < T; ++t) {
+      for (int64_t d = 0; d < D; ++d) {
+        pos_grads[t * D + d] += ln_grads.dx[(b * T + t) * D + d];
+      }
+    }
+  }
+
+  std::vector<float> h_tok_grad(vocab * D), h_pos_grad(T * D);
+  std::vector<float> h_lm_grad(vocab * D), h_gamma_grad(D), h_beta_grad(D);
+  cudaMemcpy(h_tok_grad.data(), d_tok_grad, vocab * D * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_pos_grad.data(), d_pos_grad, T * D * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_lm_grad.data(), d_lm_grad, vocab * D * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_gamma_grad.data(), d_gamma_grad, D * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_beta_grad.data(), d_beta_grad, D * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  EXPECT_TRUE(test::vectors_near(h_tok_grad, tok_grads, 1e-3f, 1e-2f))
+      << "token embedding grad mismatch";
+  EXPECT_TRUE(test::vectors_near(h_pos_grad, pos_grads, 1e-3f, 1e-2f))
+      << "position embedding grad mismatch";
+  EXPECT_TRUE(test::vectors_near(h_lm_grad, lm_grads.dW, 1e-3f, 1e-2f))
+      << "lm head grad mismatch";
+  EXPECT_TRUE(test::vectors_near(h_gamma_grad, ln_grads.dgamma, 1e-3f, 1e-2f))
+      << "final LN gamma grad mismatch";
+  EXPECT_TRUE(test::vectors_near(h_beta_grad, ln_grads.dbeta, 1e-3f, 1e-2f))
+      << "final LN beta grad mismatch";
+
+  cudaFree(d_ids);
+  cudaFree(d_tok); cudaFree(d_pos); cudaFree(d_lm);
+  cudaFree(d_gamma); cudaFree(d_beta);
+  cudaFree(d_embed); cudaFree(d_mean); cudaFree(d_inv);
+  cudaFree(d_final); cudaFree(d_logits); cudaFree(d_dlogits);
+  cudaFree(d_tok_grad); cudaFree(d_pos_grad); cudaFree(d_lm_grad);
+  cudaFree(d_gamma_grad); cudaFree(d_beta_grad);
 }
 
 // --- CPU-only: end-to-end tiny model verification ---
