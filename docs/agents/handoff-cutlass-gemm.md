@@ -68,6 +68,9 @@ closed test-first:
 - `tests/integration/gpt_checkpoint_roundtrip_test.cc` now verifies that
   checkpoint save/load preserves zero-layer GPT forward logits after rebuilding
   typed parameter views from a loaded flat parameter buffer.
+- `tests/integration/attention_gpu_test.cc` now runs a real causal attention
+  forward pass and checks finite output plus lower-triangular, row-normalized
+  saved probability tensors.
 
 ## Next recommended scaffold frontier
 
