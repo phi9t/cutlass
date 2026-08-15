@@ -3,13 +3,22 @@
 # GEMM, reductions, elementwise ops, layout transforms.
 # Each sub-family is a separate target to keep dependencies narrow.
 
-load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 package(default_visibility = [
     "//src:__subpackages__",
     "//tests:__subpackages__",
 ])
+
+cc_library(
+    name = "gemm_problem",
+    hdrs = ["gemm_problem.h"],
+    deps = [
+        "//src/core",
+        "//src/tensor",
+    ],
+)
 
 cuda_library(
     name = "gemm",
@@ -22,6 +31,7 @@ cuda_library(
         "gemm_cublaslt.cc",
     ],
     deps = [
+        ":gemm_problem",
         "//src/core",
         "//src/tensor",
         "//third_party/cuda:cudart",
@@ -68,6 +78,18 @@ cuda_library(
 )
 
 # ---- Tests ----
+
+cc_test(
+    name = "gemm_problem_test",
+    srcs = ["gemm_problem_test.cc"],
+    size = "small",
+    timeout = "short",
+    deps = [
+        ":gemm_problem",
+        "//tests:test_main",
+        "@googletest//:gtest",
+    ],
+)
 
 cc_test(
     name = "gemm_test",

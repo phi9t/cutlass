@@ -9,25 +9,12 @@
 
 #include <cublasLt.h>
 
+#include "src/kernels/gemm_problem.h"
+
 namespace gpt {
 namespace kernels {
 
 namespace {
-
-enum class MatrixOrder { kRowMajor, kColumnMajor, kUnsupported };
-
-MatrixOrder classify_strides(int64_t row_stride, int64_t col_stride,
-                             int64_t* leading_dim) {
-  if (col_stride == 1) {
-    *leading_dim = row_stride;
-    return MatrixOrder::kRowMajor;
-  }
-  if (row_stride == 1) {
-    *leading_dim = col_stride;
-    return MatrixOrder::kColumnMajor;
-  }
-  return MatrixOrder::kUnsupported;
-}
 
 Status cublas_status(cublasStatus_t status, const char* context) {
   if (status == CUBLAS_STATUS_SUCCESS) return Status::Ok();
@@ -38,14 +25,15 @@ Status cublas_status(cublasStatus_t status, const char* context) {
 
 Status create_layout(cublasLtMatrixLayout_t* layout, cudaDataType type,
                      int64_t rows, int64_t cols, int64_t leading_dim,
-                     MatrixOrder order) {
+                     MatrixOrientation orientation) {
   GPT_RETURN_IF_ERROR(cublas_status(
       cublasLtMatrixLayoutCreate(layout, type, static_cast<uint64_t>(rows),
                                  static_cast<uint64_t>(cols), leading_dim),
       "cublasLtMatrixLayoutCreate"));
 
   cublasLtOrder_t cublas_order =
-      (order == MatrixOrder::kRowMajor) ? CUBLASLT_ORDER_ROW : CUBLASLT_ORDER_COL;
+      (orientation == MatrixOrientation::kRowMajor) ? CUBLASLT_ORDER_ROW
+                                                    : CUBLASLT_ORDER_COL;
   GPT_RETURN_IF_ERROR(cublas_status(
       cublasLtMatrixLayoutSetAttribute(*layout, CUBLASLT_MATRIX_LAYOUT_ORDER,
                                        &cublas_order, sizeof(cublas_order)),
@@ -73,24 +61,9 @@ Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
                           float beta, const CudaStream& stream,
                           int32_t batch_count = 1, int64_t batch_a = 0,
                           int64_t batch_b = 0, int64_t batch_c = 0) {
-  if (A.shape[1] != B.shape[0]) {
-    return Status(StatusCode::kInvalidArgument, "GEMM K-dim mismatch");
-  }
-  if (A.shape[0] != C.shape[0] || B.shape[1] != C.shape[1]) {
-    return Status(StatusCode::kInvalidArgument, "GEMM output shape mismatch");
-  }
-
-  int64_t lda = 0, ldb = 0, ldc = 0;
-  const MatrixOrder a_order = classify_strides(A.stride[0], A.stride[1], &lda);
-  const MatrixOrder b_order = classify_strides(B.stride[0], B.stride[1], &ldb);
-  const MatrixOrder c_order = classify_strides(C.stride[0], C.stride[1], &ldc);
-  if (a_order == MatrixOrder::kUnsupported ||
-      b_order == MatrixOrder::kUnsupported ||
-      c_order == MatrixOrder::kUnsupported) {
-    return Status(StatusCode::kInvalidArgument,
-                  std::string(context) +
-                      ": unsupported strides (need unit-stride axis per operand)");
-  }
+  Result<GemmProblem> problem_result = make_gemm_problem(A, B, C);
+  if (!problem_result.ok()) return problem_result.status();
+  GemmProblem problem = problem_result.value();
 
   cublasLtHandle_t handle = nullptr;
   cublasLtMatmulDesc_t matmul = nullptr;
@@ -118,17 +91,20 @@ Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
     return result;
   }
 
-  result = create_layout(&a_layout, type, A.shape[0], A.shape[1], lda, a_order);
+  result = create_layout(&a_layout, type, A.shape[0], A.shape[1],
+                         problem.a.leading_dim, problem.a.orientation);
   if (!result.ok()) {
     cleanup();
     return result;
   }
-  result = create_layout(&b_layout, type, B.shape[0], B.shape[1], ldb, b_order);
+  result = create_layout(&b_layout, type, B.shape[0], B.shape[1],
+                         problem.b.leading_dim, problem.b.orientation);
   if (!result.ok()) {
     cleanup();
     return result;
   }
-  result = create_layout(&c_layout, type, C.shape[0], C.shape[1], ldc, c_order);
+  result = create_layout(&c_layout, type, C.shape[0], C.shape[1],
+                         problem.c.leading_dim, problem.c.orientation);
   if (!result.ok()) {
     cleanup();
     return result;

@@ -26,37 +26,12 @@
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/gemm/device/gemm_batched.h"
 #include "src/kernels/gemm_cublaslt_internal.h"
+#include "src/kernels/gemm_problem.h"
 
 namespace gpt {
 namespace kernels {
 
 namespace {
-
-// How a matrix's (row_stride, col_stride) map onto a CUTLASS matrix layout.
-enum class Orientation { kRowMajor, kColumnMajor, kUnsupported };
-
-// A GEMM operand contributes exactly one contiguous (unit-stride) axis. Detect
-// which, and report the leading dimension (the stride of the *other* axis).
-Orientation classify_strides(int64_t row_stride, int64_t col_stride,
-                             int64_t* leading_dim) {
-  if (col_stride == 1) {  // row-major: rows step by row_stride
-    *leading_dim = row_stride;
-    return Orientation::kRowMajor;
-  }
-  if (row_stride == 1) {  // column-major: cols step by col_stride
-    *leading_dim = col_stride;
-    return Orientation::kColumnMajor;
-  }
-  return Orientation::kUnsupported;
-}
-
-Orientation classify(const Tensor2D<float>& m, int64_t* leading_dim) {
-  return classify_strides(m.stride[0], m.stride[1], leading_dim);
-}
-
-Orientation classify(const Tensor2D<__nv_bfloat16>& m, int64_t* leading_dim) {
-  return classify_strides(m.stride[0], m.stride[1], leading_dim);
-}
 
 // Launch one concrete CUTLASS device::Gemm instantiation for the detected
 // layouts. M,N,K and the leading dims are computed by the caller.
@@ -145,17 +120,17 @@ Status gemm_f32(Tensor2D<float> A, Tensor2D<float> B, Tensor2D<float> C,
   if (backend != GemmBackend::kCutlass) {
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
-  // Validate shapes.
-  if (A.shape[1] != B.shape[0]) {
-    return Status(StatusCode::kInvalidArgument, "GEMM K-dim mismatch");
-  }
-  if (A.shape[0] != C.shape[0] || B.shape[1] != C.shape[1]) {
-    return Status(StatusCode::kInvalidArgument, "GEMM output shape mismatch");
+  Result<GemmProblem> problem_result = make_gemm_problem(A, B, C);
+  if (!problem_result.ok()) return problem_result.status();
+  GemmProblem problem = problem_result.value();
+  if (problem.c.orientation != MatrixOrientation::kRowMajor) {
+    return Status(StatusCode::kInvalidArgument,
+                  "gemm_f32: output C must be row-major");
   }
 
-  const int M = static_cast<int>(A.shape[0]);
-  const int N = static_cast<int>(B.shape[1]);
-  const int K = static_cast<int>(A.shape[1]);
+  const int M = static_cast<int>(problem.m);
+  const int N = static_cast<int>(problem.n);
+  const int K = static_cast<int>(problem.k);
 
   // CUTLASS computes D = alpha*A@B + beta*C in column-major. We evaluate the
   // transpose instead: C^T = B^T @ A^T. Column-major C^T (N x M, ld=stride_row)
@@ -163,18 +138,6 @@ Status gemm_f32(Tensor2D<float> A, Tensor2D<float> B, Tensor2D<float> C,
   // swaps its logical axes and its strides, which also flips row/column-major.
   // So passing B as the first factor and A as the second, each with row/col-
   // major SWAPPED relative to its own detection, yields C^T directly.
-  int64_t lda64 = 0, ldb64 = 0, ldc64 = 0;
-  const Orientation a_orient = classify(A, &lda64);
-  const Orientation b_orient = classify(B, &ldb64);
-  const Orientation c_orient = classify(C, &ldc64);
-  if (a_orient == Orientation::kUnsupported ||
-      b_orient == Orientation::kUnsupported ||
-      c_orient != Orientation::kRowMajor) {
-    return Status(StatusCode::kInvalidArgument,
-                  "gemm_f32: unsupported strides (need unit-stride axis per "
-                  "operand and a row-major output C)");
-  }
-
   using RowMajor = cutlass::layout::RowMajor;
   using ColMajor = cutlass::layout::ColumnMajor;
 
@@ -182,11 +145,13 @@ Status gemm_f32(Tensor2D<float> A, Tensor2D<float> B, Tensor2D<float> C,
   // supply each operand's transposed layout: an operand that is row-major in
   // its own frame is column-major once transposed, and vice versa. The leading
   // dimension is unchanged by transposition (it is the physical stride).
-  const int lda = static_cast<int>(ldb64);  // first factor is B
-  const int ldb = static_cast<int>(lda64);  // second factor is A
-  const int ldc = static_cast<int>(ldc64);
-  const bool b_is_rm = (b_orient == Orientation::kRowMajor);
-  const bool a_is_rm = (a_orient == Orientation::kRowMajor);
+  const int lda = static_cast<int>(problem.b.leading_dim);
+  const int ldb = static_cast<int>(problem.a.leading_dim);
+  const int ldc = static_cast<int>(problem.c.leading_dim);
+  const bool b_is_rm =
+      (problem.b.orientation == MatrixOrientation::kRowMajor);
+  const bool a_is_rm =
+      (problem.a.orientation == MatrixOrientation::kRowMajor);
 
   cutlass::Status cs;
   // Dispatch over the transposed layouts of (B, A).
@@ -224,37 +189,28 @@ Status gemm_bf16(Tensor2D<__nv_bfloat16> A, Tensor2D<__nv_bfloat16> B,
   if (backend != GemmBackend::kCutlass) {
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
-  if (A.shape[1] != B.shape[0]) {
-    return Status(StatusCode::kInvalidArgument, "GEMM K-dim mismatch");
-  }
-  if (A.shape[0] != C.shape[0] || B.shape[1] != C.shape[1]) {
-    return Status(StatusCode::kInvalidArgument, "GEMM output shape mismatch");
-  }
-
-  const int M = static_cast<int>(A.shape[0]);
-  const int N = static_cast<int>(B.shape[1]);
-  const int K = static_cast<int>(A.shape[1]);
-
-  int64_t lda64 = 0, ldb64 = 0, ldc64 = 0;
-  const Orientation a_orient = classify(A, &lda64);
-  const Orientation b_orient = classify(B, &ldb64);
-  const Orientation c_orient = classify(C, &ldc64);
-  if (a_orient == Orientation::kUnsupported ||
-      b_orient == Orientation::kUnsupported ||
-      c_orient != Orientation::kRowMajor) {
+  Result<GemmProblem> problem_result = make_gemm_problem(A, B, C);
+  if (!problem_result.ok()) return problem_result.status();
+  GemmProblem problem = problem_result.value();
+  if (problem.c.orientation != MatrixOrientation::kRowMajor) {
     return Status(StatusCode::kInvalidArgument,
-                  "gemm_bf16: unsupported strides (need unit-stride axis per "
-                  "operand and a row-major output C)");
+                  "gemm_bf16: output C must be row-major");
   }
+
+  const int M = static_cast<int>(problem.m);
+  const int N = static_cast<int>(problem.n);
+  const int K = static_cast<int>(problem.k);
 
   using RowMajor = cutlass::layout::RowMajor;
   using ColMajor = cutlass::layout::ColumnMajor;
 
-  const int lda = static_cast<int>(ldb64);
-  const int ldb = static_cast<int>(lda64);
-  const int ldc = static_cast<int>(ldc64);
-  const bool b_is_rm = (b_orient == Orientation::kRowMajor);
-  const bool a_is_rm = (a_orient == Orientation::kRowMajor);
+  const int lda = static_cast<int>(problem.b.leading_dim);
+  const int ldb = static_cast<int>(problem.a.leading_dim);
+  const int ldc = static_cast<int>(problem.c.leading_dim);
+  const bool b_is_rm =
+      (problem.b.orientation == MatrixOrientation::kRowMajor);
+  const bool a_is_rm =
+      (problem.a.orientation == MatrixOrientation::kRowMajor);
 
   cutlass::Status cs;
   if (!b_is_rm && !a_is_rm) {
@@ -293,51 +249,36 @@ Status batched_gemm_f32(Tensor3D<float> A, Tensor3D<float> B,
   if (backend != GemmBackend::kCutlass) {
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
-  if (A.shape[0] != B.shape[0] || A.shape[0] != C.shape[0]) {
+  Result<GemmProblem> problem_result = make_batched_gemm_problem(A, B, C);
+  if (!problem_result.ok()) return problem_result.status();
+  GemmProblem problem = problem_result.value();
+  if (problem.c.orientation != MatrixOrientation::kRowMajor) {
     return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM batch-dim mismatch");
-  }
-  if (A.shape[2] != B.shape[1]) {
-    return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM K-dim mismatch");
-  }
-  if (A.shape[1] != C.shape[1] || B.shape[2] != C.shape[2]) {
-    return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM output shape mismatch");
+                  "batched_gemm_f32: output C must be row-major");
   }
 
-  const int batch_count = static_cast<int>(A.shape[0]);
-  const int M = static_cast<int>(A.shape[1]);
-  const int N = static_cast<int>(B.shape[2]);
-  const int K = static_cast<int>(A.shape[2]);
+  const int batch_count = static_cast<int>(problem.batch_count);
+  const int M = static_cast<int>(problem.m);
+  const int N = static_cast<int>(problem.n);
+  const int K = static_cast<int>(problem.k);
 
   // Same transpose trick as gemm_f32, applied per batch. Each operand's 2-D
   // sub-matrix uses strides {stride[1], stride[2]}; the batch stride is
   // stride[0]. Output C is row-major (stride[2]==1) so column-major C^T is
   // bit-identical, and we compute C^T = B^T @ A^T with operand order (B, A).
-  int64_t lda64 = 0, ldb64 = 0, ldc64 = 0;
-  const Orientation a_orient = classify_strides(A.stride[1], A.stride[2], &lda64);
-  const Orientation b_orient = classify_strides(B.stride[1], B.stride[2], &ldb64);
-  const Orientation c_orient = classify_strides(C.stride[1], C.stride[2], &ldc64);
-  if (a_orient == Orientation::kUnsupported ||
-      b_orient == Orientation::kUnsupported ||
-      c_orient != Orientation::kRowMajor) {
-    return Status(StatusCode::kInvalidArgument,
-                  "batched_gemm_f32: unsupported strides (need unit-stride axis "
-                  "per operand and a row-major output C)");
-  }
-
   using RowMajor = cutlass::layout::RowMajor;
   using ColMajor = cutlass::layout::ColumnMajor;
 
-  const int lda = static_cast<int>(ldb64);  // first factor is B
-  const int ldb = static_cast<int>(lda64);  // second factor is A
-  const int ldc = static_cast<int>(ldc64);
-  const int64_t batch_a = B.stride[0];  // first factor is B
-  const int64_t batch_b = A.stride[0];  // second factor is A
-  const int64_t batch_c = C.stride[0];
-  const bool b_is_rm = (b_orient == Orientation::kRowMajor);
-  const bool a_is_rm = (a_orient == Orientation::kRowMajor);
+  const int lda = static_cast<int>(problem.b.leading_dim);
+  const int ldb = static_cast<int>(problem.a.leading_dim);
+  const int ldc = static_cast<int>(problem.c.leading_dim);
+  const int64_t batch_a = problem.batch_stride_b;
+  const int64_t batch_b = problem.batch_stride_a;
+  const int64_t batch_c = problem.batch_stride_c;
+  const bool b_is_rm =
+      (problem.b.orientation == MatrixOrientation::kRowMajor);
+  const bool a_is_rm =
+      (problem.a.orientation == MatrixOrientation::kRowMajor);
 
   cutlass::Status cs;
   if (!b_is_rm && !a_is_rm) {
@@ -377,47 +318,32 @@ Status batched_gemm_bf16(Tensor3D<__nv_bfloat16> A,
   if (backend != GemmBackend::kCutlass) {
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
-  if (A.shape[0] != B.shape[0] || A.shape[0] != C.shape[0]) {
+  Result<GemmProblem> problem_result = make_batched_gemm_problem(A, B, C);
+  if (!problem_result.ok()) return problem_result.status();
+  GemmProblem problem = problem_result.value();
+  if (problem.c.orientation != MatrixOrientation::kRowMajor) {
     return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM batch-dim mismatch");
-  }
-  if (A.shape[2] != B.shape[1]) {
-    return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM K-dim mismatch");
-  }
-  if (A.shape[1] != C.shape[1] || B.shape[2] != C.shape[2]) {
-    return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM output shape mismatch");
+                  "batched_gemm_bf16: output C must be row-major");
   }
 
-  const int batch_count = static_cast<int>(A.shape[0]);
-  const int M = static_cast<int>(A.shape[1]);
-  const int N = static_cast<int>(B.shape[2]);
-  const int K = static_cast<int>(A.shape[2]);
-
-  int64_t lda64 = 0, ldb64 = 0, ldc64 = 0;
-  const Orientation a_orient = classify_strides(A.stride[1], A.stride[2], &lda64);
-  const Orientation b_orient = classify_strides(B.stride[1], B.stride[2], &ldb64);
-  const Orientation c_orient = classify_strides(C.stride[1], C.stride[2], &ldc64);
-  if (a_orient == Orientation::kUnsupported ||
-      b_orient == Orientation::kUnsupported ||
-      c_orient != Orientation::kRowMajor) {
-    return Status(StatusCode::kInvalidArgument,
-                  "batched_gemm_bf16: unsupported strides (need unit-stride axis "
-                  "per operand and a row-major output C)");
-  }
+  const int batch_count = static_cast<int>(problem.batch_count);
+  const int M = static_cast<int>(problem.m);
+  const int N = static_cast<int>(problem.n);
+  const int K = static_cast<int>(problem.k);
 
   using RowMajor = cutlass::layout::RowMajor;
   using ColMajor = cutlass::layout::ColumnMajor;
 
-  const int lda = static_cast<int>(ldb64);
-  const int ldb = static_cast<int>(lda64);
-  const int ldc = static_cast<int>(ldc64);
-  const int64_t batch_a = B.stride[0];
-  const int64_t batch_b = A.stride[0];
-  const int64_t batch_c = C.stride[0];
-  const bool b_is_rm = (b_orient == Orientation::kRowMajor);
-  const bool a_is_rm = (a_orient == Orientation::kRowMajor);
+  const int lda = static_cast<int>(problem.b.leading_dim);
+  const int ldb = static_cast<int>(problem.a.leading_dim);
+  const int ldc = static_cast<int>(problem.c.leading_dim);
+  const int64_t batch_a = problem.batch_stride_b;
+  const int64_t batch_b = problem.batch_stride_a;
+  const int64_t batch_c = problem.batch_stride_c;
+  const bool b_is_rm =
+      (problem.b.orientation == MatrixOrientation::kRowMajor);
+  const bool a_is_rm =
+      (problem.a.orientation == MatrixOrientation::kRowMajor);
 
   cutlass::Status cs;
   if (!b_is_rm && !a_is_rm) {
