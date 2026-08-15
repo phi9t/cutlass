@@ -58,12 +58,15 @@ closed test-first:
 - `src/model/gpt_model.cc::gpt_backward` now supports zero-layer models:
   LM-head backward, final LayerNorm backward, token embedding backward, and
   position embedding gradients.
+- `src/model/gpt_model.cc::gpt_backward` now supports one or more transformer
+  layers by saving each block input in `GPTForwardState::block_inputs` and
+  walking `block_backward` in reverse.
 
 ## Next recommended scaffold frontier
 
-Multi-layer GPT backward remains the next larger follow-on work. The current
-`GPTForwardState` does not preserve per-layer block inputs, so `gpt_backward`
-still returns `kNotImplemented` when `config.n_layers != 0`.
+The next larger follow-on work is the trainer/integration layer: wiring a real
+training step through loss backward, `gpt_backward`, optimizer, checkpoint, and
+DDP/NCCL policy.
 
 The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is
 wired. The only initialized `NcclContext` today is `world_size == 1`, where

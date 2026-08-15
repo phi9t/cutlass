@@ -112,6 +112,7 @@ TEST(GPTConfigTest, ParamCountScalesWithLayers) {
 TEST(GPTModelStructTest, ForwardStateLayout) {
   GPTForwardState state{};
   EXPECT_EQ(state.embed_out.data, nullptr);
+  EXPECT_TRUE(state.block_inputs.empty());
   EXPECT_TRUE(state.blocks.empty());
   EXPECT_EQ(state.final_ln_out.data, nullptr);
   EXPECT_EQ(state.logits.data, nullptr);
@@ -378,6 +379,141 @@ TEST_F(GPTModelGPUTest, BackwardZeroLayerComputesGradients) {
   cudaFree(d_final); cudaFree(d_logits); cudaFree(d_dlogits);
   cudaFree(d_tok_grad); cudaFree(d_pos_grad); cudaFree(d_lm_grad);
   cudaFree(d_gamma_grad); cudaFree(d_beta_grad);
+}
+
+TEST_F(GPTModelGPUTest, BackwardOneLayerProducesFiniteGradients) {
+  const int64_t B = 1, T = 2, D = 4, H = 2, Dh = 2, vocab = 8, mlp = 8;
+
+  GPTConfig config;
+  config.vocab_size = vocab;
+  config.max_seq_len = T;
+  config.n_layers = 1;
+  config.n_heads = H;
+  config.d_model = D;
+  config.mlp_hidden = mlp;
+  config.use_bias = false;
+  config.tie_embeddings = false;
+  config.layernorm_eps = 1e-5f;
+
+  const int64_t param_count = config.approx_param_count();
+  std::vector<int32_t> h_ids = {1, 3};
+  std::vector<float> h_params(param_count);
+  std::vector<float> h_dlogits(B * T * vocab);
+  test::SimpleRng rng(29);
+  rng.fill(h_params, 0.2f);
+  rng.fill(h_dlogits, 0.1f);
+
+  int32_t* d_ids = nullptr;
+  float* d_params = nullptr;
+  float* d_grads = nullptr;
+  float* d_dlogits = nullptr;
+  cudaMalloc(&d_ids, B * T * sizeof(int32_t));
+  cudaMalloc(&d_params, param_count * sizeof(float));
+  cudaMalloc(&d_grads, param_count * sizeof(float));
+  cudaMalloc(&d_dlogits, B * T * vocab * sizeof(float));
+  cudaMemcpy(d_ids, h_ids.data(), B * T * sizeof(int32_t), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_params, h_params.data(), param_count * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_dlogits, h_dlogits.data(), B * T * vocab * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemset(d_grads, 0, param_count * sizeof(float));
+
+  GPTParams params;
+  GPTGrads grads;
+  ASSERT_TRUE(init_gpt_params(config, d_params, params).ok());
+  ASSERT_TRUE(init_gpt_grads(config, d_grads, grads).ok());
+
+  auto alloc = [](size_t bytes) {
+    float* p = nullptr;
+    cudaMalloc(&p, bytes);
+    return p;
+  };
+
+  float* d_embed = alloc(B * T * D * sizeof(float));
+  float* d_block_input = alloc(B * T * D * sizeof(float));
+  float* d_final = alloc(B * T * D * sizeof(float));
+  float* d_logits = alloc(B * T * vocab * sizeof(float));
+  float* d_final_mean = alloc(B * T * sizeof(float));
+  float* d_final_inv = alloc(B * T * sizeof(float));
+
+  float* d_ln1_out = alloc(B * T * D * sizeof(float));
+  float* d_ln2_out = alloc(B * T * D * sizeof(float));
+  float* d_ln1_mean = alloc(B * T * sizeof(float));
+  float* d_ln1_inv = alloc(B * T * sizeof(float));
+  float* d_ln2_mean = alloc(B * T * sizeof(float));
+  float* d_ln2_inv = alloc(B * T * sizeof(float));
+  float* d_attn_out = alloc(B * T * D * sizeof(float));
+  float* d_fc1_out = alloc(B * T * mlp * sizeof(float));
+  float* d_gelu_out = alloc(B * T * mlp * sizeof(float));
+  float* d_fc2_out = alloc(B * T * D * sizeof(float));
+  float* d_qkv = alloc(B * T * 3 * D * sizeof(float));
+  float* d_Q = alloc(B * H * T * Dh * sizeof(float));
+  float* d_K = alloc(B * H * T * Dh * sizeof(float));
+  float* d_V = alloc(B * H * T * Dh * sizeof(float));
+  float* d_scores = alloc(B * H * T * T * sizeof(float));
+  float* d_probs = alloc(B * H * T * T * sizeof(float));
+  float* d_ctx = alloc(B * H * T * Dh * sizeof(float));
+  float* d_merged = alloc(B * T * D * sizeof(float));
+
+  GPTForwardState state;
+  state.embed_out = {d_embed, {B, T, D}, {T * D, D, 1}};
+  state.block_inputs.resize(1);
+  state.block_inputs[0] = {d_block_input, {B, T, D}, {T * D, D, 1}};
+  state.blocks.resize(1);
+  state.final_ln_out = {d_final, {B, T, D}, {T * D, D, 1}};
+  state.final_ln_state.mean = {d_final_mean, {B * T}, {1}};
+  state.final_ln_state.inv_std = {d_final_inv, {B * T}, {1}};
+  state.logits = {d_logits, {B * T, vocab}, {vocab, 1}};
+
+  BlockForwardState& block = state.blocks[0];
+  block.ln1_out = {d_ln1_out, {B, T, D}, {T * D, D, 1}};
+  block.ln2_out = {d_ln2_out, {B, T, D}, {T * D, D, 1}};
+  block.ln1_state.mean = {d_ln1_mean, {B * T}, {1}};
+  block.ln1_state.inv_std = {d_ln1_inv, {B * T}, {1}};
+  block.ln2_state.mean = {d_ln2_mean, {B * T}, {1}};
+  block.ln2_state.inv_std = {d_ln2_inv, {B * T}, {1}};
+  block.attn_out = {d_attn_out, {B, T, D}, {T * D, D, 1}};
+  block.fc1_out = {d_fc1_out, {B, T, mlp}, {T * mlp, mlp, 1}};
+  block.gelu_out = {d_gelu_out, {B, T, mlp}, {T * mlp, mlp, 1}};
+  block.fc2_out = {d_fc2_out, {B, T, D}, {T * D, D, 1}};
+  block.attn_state.qkv = {d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
+  block.attn_state.Q = {d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  block.attn_state.K = {d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  block.attn_state.V = {d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  block.attn_state.scores = {d_scores, {B, H, T, T}, {H * T * T, T * T, T, 1}};
+  block.attn_state.probs = {d_probs, {B, H, T, T}, {H * T * T, T * T, T, 1}};
+  block.attn_state.context = {d_ctx, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
+  block.attn_state.context_merged = {d_merged, {B, T, D}, {T * D, D, 1}};
+
+  Tensor2D<const int32_t> input_ids{d_ids, {B, T}, {T, 1}};
+  Tensor2D<const float> d_logits_view{d_dlogits, {B * T, vocab}, {vocab, 1}};
+
+  ASSERT_TRUE(gpt_forward(input_ids, config, params, state, stream_).ok());
+  auto status = gpt_backward(d_logits_view, input_ids, config, params, state,
+                             grads, stream_);
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_TRUE(stream_.synchronize().ok());
+
+  std::vector<float> h_grads(param_count);
+  cudaMemcpy(h_grads.data(), d_grads, param_count * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  float abs_sum = 0.0f;
+  for (float value : h_grads) {
+    EXPECT_TRUE(std::isfinite(value));
+    abs_sum += std::abs(value);
+  }
+  EXPECT_GT(abs_sum, 0.0f);
+
+  cudaFree(d_ids); cudaFree(d_params); cudaFree(d_grads); cudaFree(d_dlogits);
+  cudaFree(d_embed); cudaFree(d_block_input); cudaFree(d_final); cudaFree(d_logits);
+  cudaFree(d_final_mean); cudaFree(d_final_inv);
+  cudaFree(d_ln1_out); cudaFree(d_ln2_out);
+  cudaFree(d_ln1_mean); cudaFree(d_ln1_inv);
+  cudaFree(d_ln2_mean); cudaFree(d_ln2_inv);
+  cudaFree(d_attn_out); cudaFree(d_fc1_out);
+  cudaFree(d_gelu_out); cudaFree(d_fc2_out);
+  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
+  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
 // --- CPU-only: end-to-end tiny model verification ---

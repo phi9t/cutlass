@@ -19,5 +19,10 @@ Status position_embedding_backward_f32(Tensor3D<const float> d_embed,
                                        Tensor2D<float> d_position_embedding,
                                        const CudaStream& stream);
 
+// Copy a contiguous [B,T,D] tensor.
+Status copy_3d_f32(Tensor3D<const float> input,
+                   Tensor3D<float> output,
+                   const CudaStream& stream);
+
 }  // namespace model
 }  // namespace gpt

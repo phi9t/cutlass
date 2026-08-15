@@ -10,6 +10,13 @@ namespace model {
 
 namespace {
 
+__global__ void copy_3d_kernel(const float* __restrict__ input,
+                               float* __restrict__ output,
+                               int64_t total) {
+  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < total) output[idx] = input[idx];
+}
+
 __global__ void add_position_embedding_kernel(
     float* __restrict__ embed,
     const float* __restrict__ position_embedding,
@@ -75,6 +82,20 @@ Status position_embedding_backward_f32(Tensor3D<const float> d_embed,
   int grid = static_cast<int>((total + block - 1) / block);
   position_embedding_backward_kernel<<<grid, block, 0, stream.get()>>>(
       d_embed.data, d_position_embedding.data, B, T, D);
+  GPT_CHECK_CUDA(cudaGetLastError());
+  return Status::Ok();
+}
+
+Status copy_3d_f32(Tensor3D<const float> input,
+                   Tensor3D<float> output,
+                   const CudaStream& stream) {
+  if (input.shape != output.shape) {
+    return Status(StatusCode::kInvalidArgument, "copy_3d_f32: shape mismatch");
+  }
+  int64_t total = input.numel();
+  int block = 256;
+  int grid = static_cast<int>((total + block - 1) / block);
+  copy_3d_kernel<<<grid, block, 0, stream.get()>>>(input.data, output.data, total);
   GPT_CHECK_CUDA(cudaGetLastError());
   return Status::Ok();
 }

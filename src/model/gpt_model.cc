@@ -68,11 +68,15 @@ Status gpt_forward(Tensor2D<const int32_t> input_ids,
   Tensor3D<float> block_input{state.embed_out.data, {B, T, D}, {T * D, D, 1}};
 
   for (int64_t layer = 0; layer < config.n_layers; ++layer) {
-    // Output of each block becomes input to the next.
-    // For v1, alternate between two buffers or write in-place.
-    // TODO: Proper buffer management.
+    if (state.block_inputs.size() <= static_cast<size_t>(layer) ||
+        state.blocks.size() <= static_cast<size_t>(layer)) {
+      return Status(StatusCode::kInvalidArgument,
+                    "gpt_forward: missing per-layer forward state");
+    }
     Tensor3D<const float> x_in{block_input.data, block_input.shape,
                                 block_input.stride};
+    GPT_RETURN_IF_ERROR(
+        copy_3d_f32(x_in, state.block_inputs[layer], stream));
     GPT_RETURN_IF_ERROR(block_forward(
         x_in, config, params.layers[layer],
         block_input,  // output overwrites input for next layer
@@ -110,11 +114,6 @@ Status gpt_backward(Tensor2D<const float> d_logits,
                     const GPTForwardState& state,
                     GPTGrads& grads,
                     const CudaStream& stream) {
-  if (config.n_layers != 0) {
-    return Status(StatusCode::kNotImplemented,
-                  "gpt_backward for transformer layers needs saved block inputs");
-  }
-
   int64_t B = input_ids.shape[0];
   int64_t T = input_ids.shape[1];
   int64_t D = config.d_model;
@@ -148,16 +147,37 @@ Status gpt_backward(Tensor2D<const float> d_logits,
         final_ln_2d, d_logits, lm, d_final_ln_2d, lm_grads, stream));
   }
 
-  // Final LayerNorm backward. With zero transformer layers, embed_out is the
-  // saved input to the final LN.
+  // Final LayerNorm backward. state.embed_out holds the final block output
+  // because gpt_forward applies blocks in place in that buffer.
   {
     Tensor2D<const float> d_final_ln_2d{
         d_final_ln_out_ptr.value(), {N, D}, {D, 1}};
-    Tensor2D<const float> embed_2d{state.embed_out.data, {N, D}, {D, 1}};
+    Tensor2D<const float> final_ln_input_2d{
+        state.embed_out.data, {N, D}, {D, 1}};
     Tensor2D<float> d_embed_2d{d_embed.data, {N, D}, {D, 1}};
     GPT_RETURN_IF_ERROR(ops::layernorm_backward(
-        d_final_ln_2d, embed_2d, params.final_ln, state.final_ln_state,
+        d_final_ln_2d, final_ln_input_2d, params.final_ln, state.final_ln_state,
         d_embed_2d, grads.d_final_ln_gamma, grads.d_final_ln_beta, stream));
+  }
+
+  if (config.n_layers > 0) {
+    if (state.block_inputs.size() < static_cast<size_t>(config.n_layers) ||
+        state.blocks.size() < static_cast<size_t>(config.n_layers) ||
+        grads.layers.size() < static_cast<size_t>(config.n_layers)) {
+      return Status(StatusCode::kInvalidArgument,
+                    "gpt_backward: missing per-layer backward state");
+    }
+    for (int64_t layer = config.n_layers - 1; layer >= 0; --layer) {
+      Tensor3D<const float> block_input{
+          state.block_inputs[layer].data, {B, T, D}, {T * D, D, 1}};
+      Tensor3D<const float> d_block_out{
+          d_embed.data, {B, T, D}, {T * D, D, 1}};
+      Tensor3D<float> d_block_in{
+          d_embed.data, {B, T, D}, {T * D, D, 1}};
+      GPT_RETURN_IF_ERROR(block_backward(
+          d_block_out, block_input, config, params.layers[layer],
+          state.blocks[layer], d_block_in, grads.layers[layer], stream));
+    }
   }
 
   // Position embedding and token embedding both receive d_embed.
