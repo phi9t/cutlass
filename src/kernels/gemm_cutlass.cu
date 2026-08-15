@@ -26,8 +26,6 @@
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/gemm/device/gemm_batched.h"
 
-// TODO(m1): bf16 (with fp32 accumulation) and batched GEMM still stubbed below.
-
 namespace gpt {
 namespace kernels {
 

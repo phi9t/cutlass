@@ -48,7 +48,7 @@ TEST_F(GemmTest, ValidShapeAccepted) {
   Tensor2D<float> C{d_buf, {4, 4}, {4, 1}};
 
   auto status = gemm_f32(A, B, C, 1.0f, 0.0f, stream_);
-  // Will return kNotImplemented (kernel not wired yet) but NOT kInvalidArgument.
+  // This shape-validation smoke should not reject valid dimensions.
   EXPECT_NE(status.code(), StatusCode::kInvalidArgument);
 
   cudaFree(d_buf);
