@@ -60,6 +60,7 @@ Status block_backward(Tensor3D<const float> d_output,
                       const BlockForwardState& state,
                       Tensor3D<float> dx,
                       GPTGrads::LayerGrads& grads,
+                      DeviceScratchArena& scratch,
                       const CudaStream& stream);
 
 }  // namespace model

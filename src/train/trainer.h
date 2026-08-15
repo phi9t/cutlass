@@ -79,6 +79,7 @@ class Trainer {
   AdamW optimizer_;
   dist::NcclContext nccl_;
   dist::DDP ddp_;
+  DeviceScratchArena scratch_arena_;
 
   CudaStream compute_stream_;
   CudaStream comm_stream_;

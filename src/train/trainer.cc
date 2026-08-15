@@ -44,6 +44,28 @@ Tensor1D<float> Make1D(float* ptr, int64_t N) {
   return Tensor1D<float>{ptr, {N}, {1}};
 }
 
+size_t F32Bytes(int64_t count) {
+  return static_cast<size_t>(count) * sizeof(float);
+}
+
+size_t BackwardScratchBytes(const model::GPTConfig& config, int64_t B,
+                            int64_t T) {
+  const int64_t D = config.d_model;
+  const int64_t H = config.n_heads;
+  const int64_t M = config.mlp_hidden;
+  const int64_t N = B * T;
+  const int64_t block_scratch =
+      15 * N * D + 2 * N * M + 2 * B * H * T * T;
+  const int64_t model_scratch = 2 * N * D;
+  const int64_t loss_scratch = 1;
+  const size_t payload_bytes =
+      F32Bytes(loss_scratch + model_scratch + config.n_layers * block_scratch);
+  const int64_t allocation_count = 3 + config.n_layers * 17;
+  return payload_bytes +
+         static_cast<size_t>(allocation_count) *
+             DeviceScratchArena::kDefaultAlignment;
+}
+
 }  // namespace
 
 Status Trainer::init(const TrainerConfig& config) {
@@ -251,6 +273,10 @@ Status Trainer::train_step(Tensor2D<const int32_t> input_ids,
   int64_t T = input_ids.shape[1];
   int64_t N = B * T;
   GPT_RETURN_IF_ERROR(ensure_forward_state(B, T));
+  GPT_RETURN_IF_ERROR(
+      scratch_arena_.reserve_bytes(BackwardScratchBytes(config_.model_config,
+                                                        B, T)));
+  scratch_arena_.reset();
 
   // 1. Forward.
   GPT_RETURN_IF_ERROR(model::gpt_forward(
@@ -259,17 +285,19 @@ Status Trainer::train_step(Tensor2D<const int32_t> input_ids,
   // 2. Loss.
   Tensor1D<const int32_t> targets_flat{targets.data, {B * T}, {1}};
 
-  float* d_loss = nullptr;
-  GPT_RETURN_IF_ERROR(AllocF32(1, &d_loss));
+  Result<float*> d_loss = scratch_arena_.alloc_f32(1);
+  if (!d_loss.ok()) {
+    return d_loss.status();
+  }
   GPT_RETURN_IF_ERROR(ops::cross_entropy_forward(
       {fwd_state_.logits.data, fwd_state_.logits.shape, fwd_state_.logits.stride},
-      targets_flat, d_loss, compute_stream_));
+      targets_flat, d_loss.value(), compute_stream_));
 
   // Copy loss to host.
   GPT_RETURN_IF_ERROR(compute_stream_.synchronize());
   cudaError_t err =
-      cudaMemcpy(&metrics.loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
-  cudaFree(d_loss);
+      cudaMemcpy(&metrics.loss, d_loss.value(), sizeof(float),
+                 cudaMemcpyDeviceToHost);
   if (err != cudaSuccess) {
     return Status(StatusCode::kCudaError, cudaGetErrorString(err));
   }
@@ -292,7 +320,7 @@ Status Trainer::train_step(Tensor2D<const int32_t> input_ids,
       d_logits.data, d_logits.shape, d_logits.stride};
   GPT_RETURN_IF_ERROR(model::gpt_backward(
       d_logits_const, input_ids, config_.model_config, params_, fwd_state_,
-      grads_, compute_stream_));
+      grads_, scratch_arena_, compute_stream_));
 
   // 4. DDP gradient sync.
   if (nccl_.is_initialized()) {
@@ -306,6 +334,7 @@ Status Trainer::train_step(Tensor2D<const int32_t> input_ids,
                       compute_stream_));
   optimizer_.advance_step();
   ++step_;
+  scratch_arena_.reset();
 
   return Status::Ok();
 }
@@ -367,6 +396,7 @@ void Trainer::release_forward_state() {
 void Trainer::release() {
   optimizer_.release();
   nccl_.destroy();
+  scratch_arena_.release();
   release_forward_state();
   if (param_buffer_) { cudaFree(param_buffer_); param_buffer_ = nullptr; }
   if (grad_buffer_) { cudaFree(grad_buffer_); grad_buffer_ = nullptr; }

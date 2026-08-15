@@ -3,7 +3,6 @@
 #include "src/model/gpt_block.h"
 
 #include <cuda_runtime.h>
-#include <vector>
 
 #include "src/attention/attention.h"
 #include "src/kernels/elementwise.h"
@@ -13,34 +12,6 @@
 
 namespace gpt {
 namespace model {
-
-namespace {
-
-class DeviceScratch {
- public:
-  DeviceScratch() = default;
-  ~DeviceScratch() {
-    for (float* ptr : buffers_) cudaFree(ptr);
-  }
-
-  Result<float*> allocate(int64_t count) {
-    float* ptr = nullptr;
-    cudaError_t err = cudaMalloc(&ptr, static_cast<size_t>(count) * sizeof(float));
-    if (err != cudaSuccess) {
-      return Status(StatusCode::kCudaError, cudaGetErrorString(err));
-    }
-    buffers_.push_back(ptr);
-    return ptr;
-  }
-
-  DeviceScratch(const DeviceScratch&) = delete;
-  DeviceScratch& operator=(const DeviceScratch&) = delete;
-
- private:
-  std::vector<float*> buffers_;
-};
-
-}  // namespace
 
 Status block_forward(Tensor3D<const float> x,
                      const GPTConfig& config,
@@ -145,6 +116,7 @@ Status block_backward(Tensor3D<const float> d_output,
                       const BlockForwardState& state,
                       Tensor3D<float> dx,
                       GPTGrads::LayerGrads& grads,
+                      DeviceScratchArena& scratch,
                       const CudaStream& stream) {
   int64_t B = x.shape[0];
   int64_t T = x.shape[1];
@@ -153,24 +125,23 @@ Status block_backward(Tensor3D<const float> d_output,
   int64_t n = B * T * D;
   int64_t mlp_n = B * T * M;
 
-  DeviceScratch scratch;
-  auto residual1_ptr = scratch.allocate(n);
+  auto residual1_ptr = scratch.alloc_f32(n);
   if (!residual1_ptr.ok()) return residual1_ptr.status();
-  auto d_residual2_ptr = scratch.allocate(n);
+  auto d_residual2_ptr = scratch.alloc_f32(n);
   if (!d_residual2_ptr.ok()) return d_residual2_ptr.status();
-  auto d_fc2_ptr = scratch.allocate(n);
+  auto d_fc2_ptr = scratch.alloc_f32(n);
   if (!d_fc2_ptr.ok()) return d_fc2_ptr.status();
-  auto d_gelu_ptr = scratch.allocate(mlp_n);
+  auto d_gelu_ptr = scratch.alloc_f32(mlp_n);
   if (!d_gelu_ptr.ok()) return d_gelu_ptr.status();
-  auto d_fc1_ptr = scratch.allocate(mlp_n);
+  auto d_fc1_ptr = scratch.alloc_f32(mlp_n);
   if (!d_fc1_ptr.ok()) return d_fc1_ptr.status();
-  auto d_ln2_ptr = scratch.allocate(n);
+  auto d_ln2_ptr = scratch.alloc_f32(n);
   if (!d_ln2_ptr.ok()) return d_ln2_ptr.status();
-  auto d_residual1_ptr = scratch.allocate(n);
+  auto d_residual1_ptr = scratch.alloc_f32(n);
   if (!d_residual1_ptr.ok()) return d_residual1_ptr.status();
-  auto d_attn_ptr = scratch.allocate(n);
+  auto d_attn_ptr = scratch.alloc_f32(n);
   if (!d_attn_ptr.ok()) return d_attn_ptr.status();
-  auto d_ln1_ptr = scratch.allocate(n);
+  auto d_ln1_ptr = scratch.alloc_f32(n);
   if (!d_ln1_ptr.ok()) return d_ln1_ptr.status();
 
   Tensor3D<float> residual1{
@@ -279,7 +250,7 @@ Status block_backward(Tensor3D<const float> d_output,
         state.ln1_out.data, {B, T, D}, {T * D, D, 1}};
     GPT_RETURN_IF_ERROR(attention::attention_backward(
         d_attn, ln1_in, attn_cfg, params.attn, state.attn_state,
-        d_ln1, grads.attn, stream));
+        d_ln1, grads.attn, scratch, stream));
   }
 
   // LN1 backward: d_ln1_out -> d_x_from_ln1.

@@ -315,8 +315,10 @@ TEST_F(GPTModelGPUTest, BackwardZeroLayerComputesGradients) {
   Tensor2D<const float> d_logits_view{d_dlogits, {B * T, vocab}, {vocab, 1}};
 
   ASSERT_TRUE(gpt_forward(input_ids, config, params, state, stream_).ok());
+  DeviceScratchArena scratch;
+  ASSERT_TRUE(scratch.reserve_bytes(1 << 20).ok());
   auto status = gpt_backward(d_logits_view, input_ids, config, params, state,
-                             grads, stream_);
+                             grads, scratch, stream_);
   ASSERT_TRUE(status.ok()) << status.message();
   ASSERT_TRUE(stream_.synchronize().ok());
 
@@ -489,8 +491,10 @@ TEST_F(GPTModelGPUTest, BackwardOneLayerProducesFiniteGradients) {
   Tensor2D<const float> d_logits_view{d_dlogits, {B * T, vocab}, {vocab, 1}};
 
   ASSERT_TRUE(gpt_forward(input_ids, config, params, state, stream_).ok());
+  DeviceScratchArena scratch;
+  ASSERT_TRUE(scratch.reserve_bytes(1 << 20).ok());
   auto status = gpt_backward(d_logits_view, input_ids, config, params, state,
-                             grads, stream_);
+                             grads, scratch, stream_);
   ASSERT_TRUE(status.ok()) << status.message();
   ASSERT_TRUE(stream_.synchronize().ok());
 

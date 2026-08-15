@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "src/core/allocator.h"
 #include "src/core/status.h"
 #include "src/core/stream.h"
 #include "src/tensor/tensor_view.h"
@@ -105,6 +106,7 @@ Status attention_backward(Tensor3D<const float> dO,
                           const AttentionForwardState& state,
                           Tensor3D<float> dX,
                           AttentionGrads& grads,
+                          DeviceScratchArena& scratch,
                           const CudaStream& stream);
 
 }  // namespace attention

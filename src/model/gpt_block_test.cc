@@ -498,8 +498,10 @@ TEST_F(GPTBlockGPUTest, BackwardDXMatchesFiniteDifference) {
   Tensor3D<float> dx{d_dx, {B, T, D}, {T * D, D, 1}};
 
   ASSERT_TRUE(block_forward(x, config, params, output, state, stream_).ok());
+  DeviceScratchArena scratch;
+  ASSERT_TRUE(scratch.reserve_bytes(1 << 20).ok());
   auto status = block_backward(d_output_view, x, config, params, state, dx,
-                               grads, stream_);
+                               grads, scratch, stream_);
   ASSERT_TRUE(status.ok()) << status.message();
   ASSERT_TRUE(stream_.synchronize().ok());
 

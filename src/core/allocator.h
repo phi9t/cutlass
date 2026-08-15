@@ -83,4 +83,41 @@ class WorkspaceArena {
   size_t offset_ = 0;
 };
 
+// ---------------------------------------------------------------------------
+// DeviceScratchArena — per-step transient GPU scratch allocator.
+// ---------------------------------------------------------------------------
+
+class DeviceScratchArena {
+ public:
+  static constexpr size_t kDefaultAlignment = 256;
+
+  DeviceScratchArena() = default;
+
+  // Ensure the arena has at least `bytes` of backing device memory.
+  Status reserve_bytes(size_t bytes);
+
+  Result<float*> alloc_f32(int64_t count);
+  Result<void*> alloc_bytes(size_t bytes,
+                            size_t alignment = kDefaultAlignment);
+
+  // Reuse the backing allocation without freeing device memory.
+  void reset() { offset_ = 0; }
+
+  [[nodiscard]] size_t capacity() const { return capacity_; }
+  [[nodiscard]] size_t used() const { return offset_; }
+  [[nodiscard]] size_t remaining() const { return capacity_ - offset_; }
+
+  void release();
+
+  ~DeviceScratchArena();
+
+  DeviceScratchArena(const DeviceScratchArena&) = delete;
+  DeviceScratchArena& operator=(const DeviceScratchArena&) = delete;
+
+ private:
+  void* base_ = nullptr;
+  size_t capacity_ = 0;
+  size_t offset_ = 0;
+};
+
 }  // namespace gpt

@@ -7,7 +7,6 @@
 #include "src/attention/attention.h"
 
 #include <cuda_runtime.h>
-#include <vector>
 
 #include "src/attention/attention_backward_internal.h"
 #include "src/attention/attention_forward_internal.h"
@@ -18,34 +17,6 @@
 
 namespace gpt {
 namespace attention {
-
-namespace {
-
-class DeviceScratch {
- public:
-  DeviceScratch() = default;
-  ~DeviceScratch() {
-    for (float* ptr : buffers_) cudaFree(ptr);
-  }
-
-  Result<float*> allocate(int64_t count) {
-    float* ptr = nullptr;
-    cudaError_t err = cudaMalloc(&ptr, static_cast<size_t>(count) * sizeof(float));
-    if (err != cudaSuccess) {
-      return Status(StatusCode::kCudaError, cudaGetErrorString(err));
-    }
-    buffers_.push_back(ptr);
-    return ptr;
-  }
-
-  DeviceScratch(const DeviceScratch&) = delete;
-  DeviceScratch& operator=(const DeviceScratch&) = delete;
-
- private:
-  std::vector<float*> buffers_;
-};
-
-}  // namespace
 
 Status attention_forward(Tensor3D<const float> X,
                          const AttentionConfig& config,
@@ -220,6 +191,7 @@ Status attention_backward(Tensor3D<const float> dO,
                           const AttentionForwardState& state,
                           Tensor3D<float> dX,
                           AttentionGrads& grads,
+                          DeviceScratchArena& scratch,
                           const CudaStream& stream) {
   int64_t B = X.shape[0];
   int64_t T = X.shape[1];
@@ -232,22 +204,21 @@ Status attention_backward(Tensor3D<const float> dO,
                   "attention_backward: invalid model/head dimensions");
   }
 
-  DeviceScratch scratch;
-  auto d_context_merged_ptr = scratch.allocate(B * T * D);
+  auto d_context_merged_ptr = scratch.alloc_f32(B * T * D);
   if (!d_context_merged_ptr.ok()) return d_context_merged_ptr.status();
-  auto d_context_ptr = scratch.allocate(B * H * T * Dh);
+  auto d_context_ptr = scratch.alloc_f32(B * H * T * Dh);
   if (!d_context_ptr.ok()) return d_context_ptr.status();
-  auto dP_ptr = scratch.allocate(B * H * T * T);
+  auto dP_ptr = scratch.alloc_f32(B * H * T * T);
   if (!dP_ptr.ok()) return dP_ptr.status();
-  auto dV_ptr = scratch.allocate(B * H * T * Dh);
+  auto dV_ptr = scratch.alloc_f32(B * H * T * Dh);
   if (!dV_ptr.ok()) return dV_ptr.status();
-  auto dS_ptr = scratch.allocate(B * H * T * T);
+  auto dS_ptr = scratch.alloc_f32(B * H * T * T);
   if (!dS_ptr.ok()) return dS_ptr.status();
-  auto dQ_ptr = scratch.allocate(B * H * T * Dh);
+  auto dQ_ptr = scratch.alloc_f32(B * H * T * Dh);
   if (!dQ_ptr.ok()) return dQ_ptr.status();
-  auto dK_ptr = scratch.allocate(B * H * T * Dh);
+  auto dK_ptr = scratch.alloc_f32(B * H * T * Dh);
   if (!dK_ptr.ok()) return dK_ptr.status();
-  auto dQKV_ptr = scratch.allocate(B * T * 3 * D);
+  auto dQKV_ptr = scratch.alloc_f32(B * T * 3 * D);
   if (!dQKV_ptr.ok()) return dQKV_ptr.status();
 
   Tensor3D<float> d_context_merged{

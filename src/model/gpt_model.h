@@ -47,6 +47,7 @@ Status gpt_backward(Tensor2D<const float> d_logits,
                     const GPTParams& params,
                     const GPTForwardState& state,
                     GPTGrads& grads,
+                    DeviceScratchArena& scratch,
                     const CudaStream& stream);
 
 }  // namespace model

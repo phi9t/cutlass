@@ -3,7 +3,6 @@
 #include "src/model/gpt_model.h"
 
 #include <cuda_runtime.h>
-#include <vector>
 
 #include "src/model/gpt_model_forward_internal.h"
 #include "src/ops/embedding.h"
@@ -12,34 +11,6 @@
 
 namespace gpt {
 namespace model {
-
-namespace {
-
-class DeviceScratch {
- public:
-  DeviceScratch() = default;
-  ~DeviceScratch() {
-    for (float* ptr : buffers_) cudaFree(ptr);
-  }
-
-  Result<float*> allocate(int64_t count) {
-    float* ptr = nullptr;
-    cudaError_t err = cudaMalloc(&ptr, static_cast<size_t>(count) * sizeof(float));
-    if (err != cudaSuccess) {
-      return Status(StatusCode::kCudaError, cudaGetErrorString(err));
-    }
-    buffers_.push_back(ptr);
-    return ptr;
-  }
-
-  DeviceScratch(const DeviceScratch&) = delete;
-  DeviceScratch& operator=(const DeviceScratch&) = delete;
-
- private:
-  std::vector<float*> buffers_;
-};
-
-}  // namespace
 
 Status gpt_forward(Tensor2D<const int32_t> input_ids,
                    const GPTConfig& config,
@@ -113,16 +84,16 @@ Status gpt_backward(Tensor2D<const float> d_logits,
                     const GPTParams& params,
                     const GPTForwardState& state,
                     GPTGrads& grads,
+                    DeviceScratchArena& scratch,
                     const CudaStream& stream) {
   int64_t B = input_ids.shape[0];
   int64_t T = input_ids.shape[1];
   int64_t D = config.d_model;
   int64_t N = B * T;
 
-  DeviceScratch scratch;
-  auto d_final_ln_out_ptr = scratch.allocate(N * D);
+  auto d_final_ln_out_ptr = scratch.alloc_f32(N * D);
   if (!d_final_ln_out_ptr.ok()) return d_final_ln_out_ptr.status();
-  auto d_embed_ptr = scratch.allocate(N * D);
+  auto d_embed_ptr = scratch.alloc_f32(N * D);
   if (!d_embed_ptr.ok()) return d_embed_ptr.status();
 
   Tensor3D<float> d_embed{
@@ -176,7 +147,8 @@ Status gpt_backward(Tensor2D<const float> d_logits,
           d_embed.data, {B, T, D}, {T * D, D, 1}};
       GPT_RETURN_IF_ERROR(block_backward(
           d_block_out, block_input, config, params.layers[layer],
-          state.blocks[layer], d_block_in, grads.layers[layer], stream));
+          state.blocks[layer], d_block_in, grads.layers[layer], scratch,
+          stream));
     }
   }
 

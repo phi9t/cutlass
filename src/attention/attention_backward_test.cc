@@ -264,7 +264,11 @@ TEST(AttentionBackwardTest, TinyBackwardMatchesCPU) {
   Tensor3D<float> dX{d_dX, {B, T, D}, {T * D, D, 1}};
 
   ASSERT_TRUE(attention_forward(X, cfg, params, out, state, stream).ok());
-  ASSERT_TRUE(attention_backward(dO, X, cfg, params, state, dX, grads, stream).ok());
+  DeviceScratchArena scratch;
+  ASSERT_TRUE(scratch.reserve_bytes(1 << 20).ok());
+  ASSERT_TRUE(
+      attention_backward(dO, X, cfg, params, state, dX, grads, scratch, stream)
+          .ok());
   ASSERT_TRUE(stream.synchronize().ok());
 
   AttentionBackwardRef ref = cpu_attention_backward_ref(
