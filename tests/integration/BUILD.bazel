@@ -43,9 +43,7 @@ cc_test(
     size = "large",
     timeout = "long",
     deps = [
-        "//src/model:gpt_model",
-        "//src/train:optimizer",
-        "//src/ops:loss",
+        "//src/train:trainer",
         "//tests:test_main",
         "@googletest//:gtest",
     ],

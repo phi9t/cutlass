@@ -71,12 +71,15 @@ closed test-first:
 - `tests/integration/attention_gpu_test.cc` now runs a real causal attention
   forward pass and checks finite output plus lower-triangular, row-normalized
   saved probability tensors.
+- `tests/integration/gpt_overfit_test.cc` now runs repeated public
+  `Trainer::train_step` calls on a fixed tiny GPU batch and verifies loss
+  decreases.
 
 ## Next recommended scaffold frontier
 
 The next larger follow-on work is the integration/runtime layer: wiring
-`src/train/main.cc` to real data batches, adding resume-equivalence / overfit
-coverage, and defining the DDP/NCCL multi-rank rendezvous policy.
+`src/train/main.cc` to real data batches, adding resume-equivalence coverage,
+and defining the DDP/NCCL multi-rank rendezvous policy.
 
 The DDP averaging TODO in `src/dist/ddp.cc` should wait until multi-rank NCCL is
 wired. The only initialized `NcclContext` today is `world_size == 1`, where
