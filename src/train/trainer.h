@@ -12,13 +12,13 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 #include "src/core/status.h"
 #include "src/core/stream.h"
 #include "src/checkpoint/checkpoint.h"
 #include "src/dist/ddp.h"
 #include "src/dist/nccl_context.h"
+#include "src/model/forward_workspace.h"
 #include "src/model/gpt_config.h"
 #include "src/model/gpt_model.h"
 #include "src/model/gpt_params.h"
@@ -75,7 +75,7 @@ class Trainer {
   TrainerConfig config_;
   model::GPTParams params_;
   model::GPTGrads grads_;
-  model::GPTForwardState fwd_state_;
+  model::ForwardWorkspace forward_workspace_;
   AdamW optimizer_;
   dist::NcclContext nccl_;
   dist::DDP ddp_;
@@ -87,14 +87,13 @@ class Trainer {
   float* param_buffer_ = nullptr;
   float* grad_buffer_ = nullptr;
   float* d_logits_buffer_ = nullptr;
-  std::vector<float*> fwd_state_buffers_;
-  int64_t state_capacity_B_ = 0;
-  int64_t state_capacity_T_ = 0;
+  int64_t d_logits_capacity_B_ = 0;
+  int64_t d_logits_capacity_T_ = 0;
   int64_t param_count_ = 0;
   int64_t step_ = 0;
 
-  Status ensure_forward_state(int64_t B, int64_t T);
-  void release_forward_state();
+  Status ensure_step_buffers(int64_t B, int64_t T);
+  void release_step_buffers();
 };
 
 }  // namespace train

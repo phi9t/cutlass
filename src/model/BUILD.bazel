@@ -58,8 +58,14 @@ cuda_library(
 
 cc_library(
     name = "gpt_model",
-    hdrs = ["gpt_model.h"],
-    srcs = ["gpt_model.cc"],
+    hdrs = [
+        "forward_workspace.h",
+        "gpt_model.h",
+    ],
+    srcs = [
+        "forward_workspace.cc",
+        "gpt_model.cc",
+    ],
     deps = [
         ":gpt_block",
         ":gpt_config",
