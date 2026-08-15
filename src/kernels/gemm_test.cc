@@ -183,3 +183,81 @@ TEST_F(GemmTest, Bf16GemmAcceptsColumnMajorOperandView) {
   cudaFree(d_b);
   cudaFree(d_c);
 }
+
+TEST_F(GemmTest, BatchedBf16GemmMatchesCPUReference) {
+  const int64_t Batch = 2, M = 2, K = 3, N = 2;
+  std::vector<float> h_a = {
+      1.0f, 2.0f, -1.0f,
+      0.5f, -2.0f, 3.0f,
+
+      -1.5f, 0.0f, 2.0f,
+      4.0f, -0.5f, 1.0f,
+  };
+  std::vector<float> h_b = {
+      2.0f, -1.0f,
+      0.5f, 3.0f,
+      -2.0f, 1.5f,
+
+      1.0f, 2.0f,
+      -1.0f, 0.5f,
+      3.0f, -2.0f,
+  };
+  std::vector<__nv_bfloat16> h_a_bf16(Batch * M * K);
+  std::vector<__nv_bfloat16> h_b_bf16(Batch * K * N);
+  std::vector<__nv_bfloat16> h_c_bf16(Batch * M * N);
+  for (int64_t i = 0; i < Batch * M * K; ++i) {
+    h_a_bf16[i] = __float2bfloat16(h_a[i]);
+  }
+  for (int64_t i = 0; i < Batch * K * N; ++i) {
+    h_b_bf16[i] = __float2bfloat16(h_b[i]);
+  }
+  for (int64_t i = 0; i < Batch * M * N; ++i) {
+    h_c_bf16[i] = __float2bfloat16(0.0f);
+  }
+
+  __nv_bfloat16 *d_a, *d_b, *d_c;
+  cudaMalloc(&d_a, h_a_bf16.size() * sizeof(__nv_bfloat16));
+  cudaMalloc(&d_b, h_b_bf16.size() * sizeof(__nv_bfloat16));
+  cudaMalloc(&d_c, h_c_bf16.size() * sizeof(__nv_bfloat16));
+  cudaMemcpy(d_a, h_a_bf16.data(), h_a_bf16.size() * sizeof(__nv_bfloat16),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b, h_b_bf16.data(), h_b_bf16.size() * sizeof(__nv_bfloat16),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_c, h_c_bf16.data(), h_c_bf16.size() * sizeof(__nv_bfloat16),
+             cudaMemcpyHostToDevice);
+
+  Tensor3D<__nv_bfloat16> A{d_a, {Batch, M, K}, {M * K, K, 1}};
+  Tensor3D<__nv_bfloat16> B{d_b, {Batch, K, N}, {K * N, N, 1}};
+  Tensor3D<__nv_bfloat16> C{d_c, {Batch, M, N}, {M * N, N, 1}};
+
+  auto status = batched_gemm_bf16(A, B, C, 1.0f, 0.0f, stream_);
+  ASSERT_TRUE(status.ok()) << status.message();
+  stream_.synchronize();
+
+  std::vector<__nv_bfloat16> h_out_bf16(Batch * M * N);
+  cudaMemcpy(h_out_bf16.data(), d_c, h_out_bf16.size() * sizeof(__nv_bfloat16),
+             cudaMemcpyDeviceToHost);
+
+  std::vector<float> h_output(Batch * M * N);
+  for (int64_t i = 0; i < Batch * M * N; ++i) {
+    h_output[i] = __bfloat162float(h_out_bf16[i]);
+  }
+
+  std::vector<float> expected(Batch * M * N, 0.0f);
+  for (int64_t b = 0; b < Batch; ++b) {
+    for (int64_t m = 0; m < M; ++m) {
+      for (int64_t n = 0; n < N; ++n) {
+        for (int64_t k = 0; k < K; ++k) {
+          expected[b * M * N + m * N + n] +=
+              h_a[b * M * K + m * K + k] * h_b[b * K * N + k * N + n];
+        }
+      }
+    }
+  }
+
+  EXPECT_TRUE(test::vectors_near(h_output, expected, 4e-2f, 1e-3f));
+
+  cudaFree(d_a);
+  cudaFree(d_b);
+  cudaFree(d_c);
+}

@@ -114,6 +114,27 @@ cutlass::Status launch_gemm_batched(int m, int n, int k, float alpha,
   return op(args, nullptr, stream);
 }
 
+template <typename LayoutA, typename LayoutB>
+cutlass::Status launch_gemm_batched_bf16(
+    int m, int n, int k, float alpha, const __nv_bfloat16* A, int lda,
+    int64_t batch_a, const __nv_bfloat16* B, int ldb, int64_t batch_b,
+    float beta, __nv_bfloat16* C, int ldc, int64_t batch_c, int batch_count,
+    cudaStream_t stream) {
+  using BFloat16 = cutlass::bfloat16_t;
+  using ColumnMajor = cutlass::layout::ColumnMajor;
+  using Gemm = cutlass::gemm::device::GemmBatched<
+      BFloat16, LayoutA, BFloat16, LayoutB, BFloat16, ColumnMajor, float>;
+  auto const* cutlass_a = reinterpret_cast<BFloat16 const*>(A);
+  auto const* cutlass_b = reinterpret_cast<BFloat16 const*>(B);
+  auto* cutlass_c = reinterpret_cast<BFloat16*>(C);
+  Gemm op;
+  typename Gemm::Arguments args({m, n, k}, {cutlass_a, lda}, batch_a,
+                                {cutlass_b, ldb}, batch_b, {cutlass_c, ldc},
+                                batch_c, {cutlass_c, ldc}, batch_c,
+                                {alpha, beta}, batch_count);
+  return op(args, nullptr, stream);
+}
+
 }  // namespace
 
 Status gemm_f32(Tensor2D<float> A, Tensor2D<float> B, Tensor2D<float> C,
@@ -357,10 +378,66 @@ Status batched_gemm_bf16(Tensor3D<__nv_bfloat16> A,
     return Status(StatusCode::kInvalidArgument,
                   "Batched GEMM K-dim mismatch");
   }
+  if (A.shape[1] != C.shape[1] || B.shape[2] != C.shape[2]) {
+    return Status(StatusCode::kInvalidArgument,
+                  "Batched GEMM output shape mismatch");
+  }
 
-  // TODO: Launch CUTLASS batched bf16 GEMM kernel with fp32 accumulation.
-  return Status(StatusCode::kNotImplemented,
-                "CUTLASS batched bf16 GEMM kernel not yet wired");
+  const int batch_count = static_cast<int>(A.shape[0]);
+  const int M = static_cast<int>(A.shape[1]);
+  const int N = static_cast<int>(B.shape[2]);
+  const int K = static_cast<int>(A.shape[2]);
+
+  int64_t lda64 = 0, ldb64 = 0, ldc64 = 0;
+  const Orientation a_orient = classify_strides(A.stride[1], A.stride[2], &lda64);
+  const Orientation b_orient = classify_strides(B.stride[1], B.stride[2], &ldb64);
+  const Orientation c_orient = classify_strides(C.stride[1], C.stride[2], &ldc64);
+  if (a_orient == Orientation::kUnsupported ||
+      b_orient == Orientation::kUnsupported ||
+      c_orient != Orientation::kRowMajor) {
+    return Status(StatusCode::kInvalidArgument,
+                  "batched_gemm_bf16: unsupported strides (need unit-stride axis "
+                  "per operand and a row-major output C)");
+  }
+
+  using RowMajor = cutlass::layout::RowMajor;
+  using ColMajor = cutlass::layout::ColumnMajor;
+
+  const int lda = static_cast<int>(ldb64);
+  const int ldb = static_cast<int>(lda64);
+  const int ldc = static_cast<int>(ldc64);
+  const int64_t batch_a = B.stride[0];
+  const int64_t batch_b = A.stride[0];
+  const int64_t batch_c = C.stride[0];
+  const bool b_is_rm = (b_orient == Orientation::kRowMajor);
+  const bool a_is_rm = (a_orient == Orientation::kRowMajor);
+
+  cutlass::Status cs;
+  if (!b_is_rm && !a_is_rm) {
+    cs = launch_gemm_batched_bf16<RowMajor, RowMajor>(
+        N, M, K, alpha, B.data, lda, batch_a, A.data, ldb, batch_b, beta,
+        C.data, ldc, batch_c, batch_count, stream.get());
+  } else if (!b_is_rm && a_is_rm) {
+    cs = launch_gemm_batched_bf16<RowMajor, ColMajor>(
+        N, M, K, alpha, B.data, lda, batch_a, A.data, ldb, batch_b, beta,
+        C.data, ldc, batch_c, batch_count, stream.get());
+  } else if (b_is_rm && !a_is_rm) {
+    cs = launch_gemm_batched_bf16<ColMajor, RowMajor>(
+        N, M, K, alpha, B.data, lda, batch_a, A.data, ldb, batch_b, beta,
+        C.data, ldc, batch_c, batch_count, stream.get());
+  } else {
+    cs = launch_gemm_batched_bf16<ColMajor, ColMajor>(
+        N, M, K, alpha, B.data, lda, batch_a, A.data, ldb, batch_b, beta,
+        C.data, ldc, batch_c, batch_count, stream.get());
+  }
+
+  if (cs != cutlass::Status::kSuccess) {
+    return Status(StatusCode::kCudaError,
+                  std::string("CUTLASS batched_gemm_bf16 launch failed: ") +
+                      cutlassGetStatusString(cs));
+  }
+  GPT_CHECK_CUDA(cudaGetLastError());
+  return Status::Ok();
 }
 
 }  // namespace kernels
