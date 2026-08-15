@@ -200,5 +200,28 @@ Status batched_gemm_f32_cublaslt(Tensor3D<float> A, Tensor3D<float> B,
                             B.stride[0], C.stride[0]);
 }
 
+Status batched_gemm_bf16_cublaslt(Tensor3D<__nv_bfloat16> A,
+                                  Tensor3D<__nv_bfloat16> B,
+                                  Tensor3D<__nv_bfloat16> C, float alpha,
+                                  float beta, const CudaStream& stream) {
+  if (A.shape[0] != B.shape[0] || A.shape[0] != C.shape[0]) {
+    return Status(StatusCode::kInvalidArgument,
+                  "Batched GEMM batch-dim mismatch");
+  }
+  Tensor2D<__nv_bfloat16> a{A.data,
+                            {A.shape[1], A.shape[2]},
+                            {A.stride[1], A.stride[2]}};
+  Tensor2D<__nv_bfloat16> b{B.data,
+                            {B.shape[1], B.shape[2]},
+                            {B.stride[1], B.stride[2]}};
+  Tensor2D<__nv_bfloat16> c{C.data,
+                            {C.shape[1], C.shape[2]},
+                            {C.stride[1], C.stride[2]}};
+  return gemm_cublaslt_impl(a, b, c, CUDA_R_16BF,
+                            "batched_gemm_bf16_cublaslt", alpha, beta, stream,
+                            static_cast<int32_t>(A.shape[0]), A.stride[0],
+                            B.stride[0], C.stride[0]);
+}
+
 }  // namespace kernels
 }  // namespace gpt

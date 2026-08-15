@@ -21,5 +21,10 @@ Status batched_gemm_f32_cublaslt(Tensor3D<float> A, Tensor3D<float> B,
                                  Tensor3D<float> C, float alpha, float beta,
                                  const CudaStream& stream);
 
+Status batched_gemm_bf16_cublaslt(Tensor3D<__nv_bfloat16> A,
+                                  Tensor3D<__nv_bfloat16> B,
+                                  Tensor3D<__nv_bfloat16> C, float alpha,
+                                  float beta, const CudaStream& stream);
+
 }  // namespace kernels
 }  // namespace gpt
