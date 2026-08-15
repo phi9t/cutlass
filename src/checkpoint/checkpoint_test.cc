@@ -44,7 +44,8 @@ TEST_F(CheckpointTest, SaveLoadRoundTrip) {
   CheckpointMetadata meta;
   meta.step = 42;
   meta.param_count = n;
-  meta.config_json = "{}";
+  meta.dataset_cursor = 4096;
+  meta.config_json = "{\"learning_rate\":0.001,\"run\":\"checkpoint_test\"}";
 
   ASSERT_TRUE(save_checkpoint(dir_, d_params, d_m, d_v, n, meta).ok());
 
@@ -55,6 +56,11 @@ TEST_F(CheckpointTest, SaveLoadRoundTrip) {
 
   CheckpointMetadata loaded_meta;
   ASSERT_TRUE(load_checkpoint(dir_, d_params, d_m, d_v, n, loaded_meta).ok());
+
+  EXPECT_EQ(loaded_meta.step, meta.step);
+  EXPECT_EQ(loaded_meta.param_count, meta.param_count);
+  EXPECT_EQ(loaded_meta.dataset_cursor, meta.dataset_cursor);
+  EXPECT_EQ(loaded_meta.config_json, meta.config_json);
 
   // Verify params match.
   std::vector<float> h_loaded(n);
