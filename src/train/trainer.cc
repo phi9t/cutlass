@@ -221,10 +221,13 @@ Status Trainer::save_checkpoint(const std::string& dir,
   meta.param_count = param_count_;
   meta.dataset_cursor = dataset_cursor;
   meta.config_json = config_json;
-  return checkpoint::save_checkpoint(dir, param_buffer_,
-                                     optimizer_.first_moment(),
-                                     optimizer_.second_moment(),
-                                     param_count_, meta);
+  checkpoint::TrainingSnapshot snapshot;
+  snapshot.params = param_buffer_;
+  snapshot.opt_m = optimizer_.first_moment();
+  snapshot.opt_v = optimizer_.second_moment();
+  snapshot.param_count = param_count_;
+  snapshot.metadata = meta;
+  return checkpoint::save_training_snapshot(dir, snapshot);
 }
 
 Status Trainer::load_checkpoint(const std::string& dir,
@@ -235,13 +238,18 @@ Status Trainer::load_checkpoint(const std::string& dir,
                   "Trainer::load_checkpoint: trainer not initialized");
   }
 
-  GPT_RETURN_IF_ERROR(checkpoint::load_checkpoint(
-      dir, param_buffer_, optimizer_.first_moment(), optimizer_.second_moment(),
-      param_count_, meta));
-  if (meta.param_count != param_count_) {
+  checkpoint::TrainingSnapshot snapshot;
+  snapshot.params = param_buffer_;
+  snapshot.opt_m = optimizer_.first_moment();
+  snapshot.opt_v = optimizer_.second_moment();
+  snapshot.param_count = param_count_;
+  snapshot.metadata.param_count = param_count_;
+  GPT_RETURN_IF_ERROR(checkpoint::load_training_snapshot(dir, snapshot));
+  if (snapshot.metadata.param_count != param_count_) {
     return Status(StatusCode::kInvalidArgument,
                   "Trainer::load_checkpoint: param_count mismatch");
   }
+  meta = snapshot.metadata;
   step_ = meta.step;
   optimizer_.set_step(meta.step);
   return Status::Ok();

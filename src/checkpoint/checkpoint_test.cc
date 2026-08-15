@@ -74,6 +74,71 @@ TEST_F(CheckpointTest, SaveLoadRoundTrip) {
   cudaFree(d_params); cudaFree(d_m); cudaFree(d_v);
 }
 
+TEST_F(CheckpointTest, TrainingSnapshotRoundTrip) {
+  const int64_t n = 8;
+  std::vector<float> h_params(n), h_m(n), h_v(n);
+  for (int i = 0; i < n; ++i) {
+    h_params[i] = static_cast<float>(10 + i);
+    h_m[i] = static_cast<float>(20 + i);
+    h_v[i] = static_cast<float>(30 + i);
+  }
+
+  float *d_params, *d_m, *d_v;
+  cudaMalloc(&d_params, n * sizeof(float));
+  cudaMalloc(&d_m, n * sizeof(float));
+  cudaMalloc(&d_v, n * sizeof(float));
+  cudaMemcpy(d_params, h_params.data(), n * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_m, h_m.data(), n * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_v, h_v.data(), n * sizeof(float), cudaMemcpyHostToDevice);
+
+  TrainingSnapshot snapshot;
+  snapshot.params = d_params;
+  snapshot.opt_m = d_m;
+  snapshot.opt_v = d_v;
+  snapshot.param_count = n;
+  snapshot.metadata.step = 5;
+  snapshot.metadata.param_count = n;
+  snapshot.metadata.dataset_cursor = 9;
+  snapshot.metadata.config_json = "{\"run\":\"snapshot\"}";
+  ASSERT_TRUE(save_training_snapshot(dir_, snapshot).ok());
+
+  cudaMemset(d_params, 0, n * sizeof(float));
+  cudaMemset(d_m, 0, n * sizeof(float));
+  cudaMemset(d_v, 0, n * sizeof(float));
+  snapshot.metadata = CheckpointMetadata{};
+  snapshot.metadata.param_count = n;
+  ASSERT_TRUE(load_training_snapshot(dir_, snapshot).ok());
+  EXPECT_EQ(snapshot.metadata.step, 5);
+  EXPECT_EQ(snapshot.metadata.dataset_cursor, 9);
+
+  std::vector<float> h_loaded(n);
+  cudaMemcpy(h_loaded.data(), d_params, n * sizeof(float), cudaMemcpyDeviceToHost);
+  EXPECT_EQ(h_loaded, h_params);
+
+  cudaFree(d_params); cudaFree(d_m); cudaFree(d_v);
+}
+
+TEST_F(CheckpointTest, TrainingSnapshotRejectsMetadataCountMismatch) {
+  const int64_t n = 4;
+  float *d_params, *d_m, *d_v;
+  cudaMalloc(&d_params, n * sizeof(float));
+  cudaMalloc(&d_m, n * sizeof(float));
+  cudaMalloc(&d_v, n * sizeof(float));
+
+  TrainingSnapshot snapshot;
+  snapshot.params = d_params;
+  snapshot.opt_m = d_m;
+  snapshot.opt_v = d_v;
+  snapshot.param_count = n;
+  snapshot.metadata.param_count = n + 1;
+
+  Status status = save_training_snapshot(dir_, snapshot);
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), StatusCode::kInvalidArgument);
+
+  cudaFree(d_params); cudaFree(d_m); cudaFree(d_v);
+}
+
 TEST_F(CheckpointTest, ParamCountMismatchDoesNotOverwriteBuffers) {
   const int64_t saved_n = 16;
   const int64_t target_n = 32;

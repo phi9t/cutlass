@@ -26,6 +26,20 @@ struct CheckpointMetadata {
   std::string config_json;
 };
 
+struct TrainingSnapshot {
+  float* params = nullptr;
+  float* opt_m = nullptr;
+  float* opt_v = nullptr;
+  int64_t param_count = 0;
+  CheckpointMetadata metadata;
+};
+
+Status save_training_snapshot(const std::string& dir,
+                              const TrainingSnapshot& snapshot);
+
+Status load_training_snapshot(const std::string& dir,
+                              TrainingSnapshot& snapshot);
+
 // Save a checkpoint to disk.
 //   dir:     checkpoint directory (will be created if needed)
 //   params:  device pointer to flat parameter buffer

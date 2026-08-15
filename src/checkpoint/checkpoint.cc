@@ -229,17 +229,35 @@ static Status load_device_buffer(std::string const& path,
   return Status::Ok();
 }
 
-Status save_checkpoint(std::string const& dir,
-                       float const* params,
-                       float const* opt_m,
-                       float const* opt_v,
-                       int64_t param_count,
-                       CheckpointMetadata const& meta) {
+static Status validate_snapshot(TrainingSnapshot const& snapshot,
+                                char const* context) {
+  if (snapshot.params == nullptr || snapshot.opt_m == nullptr ||
+      snapshot.opt_v == nullptr) {
+    return Status(StatusCode::kInvalidArgument,
+                  std::string(context) + ": null checkpoint buffer");
+  }
+  if (snapshot.param_count <= 0) {
+    return Status(StatusCode::kInvalidArgument,
+                  std::string(context) + ": param_count must be positive");
+  }
+  if (snapshot.metadata.param_count != snapshot.param_count) {
+    return Status(StatusCode::kInvalidArgument,
+                  std::string(context) + ": metadata param_count mismatch");
+  }
+  return Status::Ok();
+}
+
+Status save_training_snapshot(std::string const& dir,
+                              TrainingSnapshot const& snapshot) {
+  GPT_RETURN_IF_ERROR(validate_snapshot(snapshot, "save_training_snapshot"));
   fs::create_directories(dir);
 
-  GPT_RETURN_IF_ERROR(save_device_buffer(dir + "/params.bin", params, param_count));
-  GPT_RETURN_IF_ERROR(save_device_buffer(dir + "/opt_m.bin", opt_m, param_count));
-  GPT_RETURN_IF_ERROR(save_device_buffer(dir + "/opt_v.bin", opt_v, param_count));
+  GPT_RETURN_IF_ERROR(save_device_buffer(dir + "/params.bin", snapshot.params,
+                                         snapshot.param_count));
+  GPT_RETURN_IF_ERROR(save_device_buffer(dir + "/opt_m.bin", snapshot.opt_m,
+                                         snapshot.param_count));
+  GPT_RETURN_IF_ERROR(save_device_buffer(dir + "/opt_v.bin", snapshot.opt_v,
+                                         snapshot.param_count));
 
   // Save metadata.
   std::ofstream mf(dir + "/meta.json");
@@ -247,21 +265,26 @@ Status save_checkpoint(std::string const& dir,
     return Status(StatusCode::kInternalError, "Cannot write meta.json");
   }
   mf << "{\n"
-     << "  \"step\": " << meta.step << ",\n"
-     << "  \"param_count\": " << meta.param_count << ",\n"
-     << "  \"dataset_cursor\": " << meta.dataset_cursor << ",\n"
-     << "  \"config\": " << meta.config_json << "\n"
+     << "  \"step\": " << snapshot.metadata.step << ",\n"
+     << "  \"param_count\": " << snapshot.metadata.param_count << ",\n"
+     << "  \"dataset_cursor\": " << snapshot.metadata.dataset_cursor << ",\n"
+     << "  \"config\": " << snapshot.metadata.config_json << "\n"
      << "}\n";
 
   return Status::Ok();
 }
 
-Status load_checkpoint(std::string const& dir,
-                       float* params,
-                       float* opt_m,
-                       float* opt_v,
-                       int64_t param_count,
-                       CheckpointMetadata& meta) {
+Status load_training_snapshot(std::string const& dir,
+                              TrainingSnapshot& snapshot) {
+  if (snapshot.params == nullptr || snapshot.opt_m == nullptr ||
+      snapshot.opt_v == nullptr) {
+    return Status(StatusCode::kInvalidArgument,
+                  "load_training_snapshot: null checkpoint buffer");
+  }
+  if (snapshot.param_count <= 0) {
+    return Status(StatusCode::kInvalidArgument,
+                  "load_training_snapshot: param_count must be positive");
+  }
   if (!fs::exists(dir + "/params.bin")) {
     return Status(StatusCode::kInvalidArgument,
                   "Checkpoint not found: " + dir);
@@ -271,20 +294,58 @@ Status load_checkpoint(std::string const& dir,
   if (!loaded_meta.ok()) {
     return loaded_meta.status();
   }
-  if (loaded_meta.value().param_count != param_count) {
+  if (loaded_meta.value().param_count != snapshot.param_count) {
     return Status(StatusCode::kInvalidArgument,
                   "Checkpoint param_count mismatch: " + dir);
   }
 
-  GPT_RETURN_IF_ERROR(check_file_size(dir + "/params.bin", param_count));
-  GPT_RETURN_IF_ERROR(check_file_size(dir + "/opt_m.bin", param_count));
-  GPT_RETURN_IF_ERROR(check_file_size(dir + "/opt_v.bin", param_count));
-  GPT_RETURN_IF_ERROR(load_device_buffer(dir + "/params.bin", params, param_count));
-  GPT_RETURN_IF_ERROR(load_device_buffer(dir + "/opt_m.bin", opt_m, param_count));
-  GPT_RETURN_IF_ERROR(load_device_buffer(dir + "/opt_v.bin", opt_v, param_count));
+  GPT_RETURN_IF_ERROR(check_file_size(dir + "/params.bin",
+                                      snapshot.param_count));
+  GPT_RETURN_IF_ERROR(check_file_size(dir + "/opt_m.bin",
+                                      snapshot.param_count));
+  GPT_RETURN_IF_ERROR(check_file_size(dir + "/opt_v.bin",
+                                      snapshot.param_count));
+  GPT_RETURN_IF_ERROR(load_device_buffer(dir + "/params.bin", snapshot.params,
+                                         snapshot.param_count));
+  GPT_RETURN_IF_ERROR(load_device_buffer(dir + "/opt_m.bin", snapshot.opt_m,
+                                         snapshot.param_count));
+  GPT_RETURN_IF_ERROR(load_device_buffer(dir + "/opt_v.bin", snapshot.opt_v,
+                                         snapshot.param_count));
 
-  meta = loaded_meta.value();
+  snapshot.metadata = loaded_meta.value();
 
+  return Status::Ok();
+}
+
+Status save_checkpoint(std::string const& dir,
+                       float const* params,
+                       float const* opt_m,
+                       float const* opt_v,
+                       int64_t param_count,
+                       CheckpointMetadata const& meta) {
+  TrainingSnapshot snapshot;
+  snapshot.params = const_cast<float*>(params);
+  snapshot.opt_m = const_cast<float*>(opt_m);
+  snapshot.opt_v = const_cast<float*>(opt_v);
+  snapshot.param_count = param_count;
+  snapshot.metadata = meta;
+  return save_training_snapshot(dir, snapshot);
+}
+
+Status load_checkpoint(std::string const& dir,
+                       float* params,
+                       float* opt_m,
+                       float* opt_v,
+                       int64_t param_count,
+                       CheckpointMetadata& meta) {
+  TrainingSnapshot snapshot;
+  snapshot.params = params;
+  snapshot.opt_m = opt_m;
+  snapshot.opt_v = opt_v;
+  snapshot.param_count = param_count;
+  snapshot.metadata.param_count = param_count;
+  GPT_RETURN_IF_ERROR(load_training_snapshot(dir, snapshot));
+  meta = snapshot.metadata;
   return Status::Ok();
 }
 
