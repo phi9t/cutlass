@@ -1,6 +1,6 @@
 # Layer 6 — Distributed: NCCL context and DDP.
 
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = [
     "//src:__subpackages__",
@@ -25,5 +25,27 @@ cc_library(
         ":nccl_context",
         "//src/core",
         "//src/kernels:elementwise",
+    ],
+)
+
+cc_library(
+    name = "local_rank_runtime",
+    hdrs = ["local_rank_runtime.h"],
+    srcs = ["local_rank_runtime.cc"],
+    deps = [
+        ":nccl_context",
+        "//src/core",
+    ],
+)
+
+cc_test(
+    name = "local_rank_runtime_test",
+    srcs = ["local_rank_runtime_test.cc"],
+    size = "small",
+    timeout = "short",
+    deps = [
+        ":local_rank_runtime",
+        "//tests:test_main",
+        "@googletest//:gtest",
     ],
 )

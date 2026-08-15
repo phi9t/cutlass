@@ -3,6 +3,7 @@
 #include "gtest/gtest.h"
 #include "src/core/stream.h"
 #include "src/dist/ddp.h"
+#include "src/dist/local_rank_runtime.h"
 #include "src/dist/nccl_context.h"
 
 #include <cuda_runtime.h>
@@ -11,6 +12,21 @@
 #include <vector>
 
 using namespace gpt;
+
+namespace {
+
+std::string UniqueIdHex(unsigned char const unique_id[128]) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.resize(256);
+  for (int i = 0; i < 128; ++i) {
+    out[2 * i] = kHex[unique_id[i] >> 4];
+    out[2 * i + 1] = kHex[unique_id[i] & 0x0f];
+  }
+  return out;
+}
+
+}  // namespace
 
 TEST(DDP2GPUTest, TwoRanksAverageGradientBuckets) {
   int device_count = 0;
@@ -23,6 +39,7 @@ TEST(DDP2GPUTest, TwoRanksAverageGradientBuckets) {
   unsigned char unique_id[128] = {};
   auto status = dist::create_nccl_unique_id(unique_id);
   ASSERT_TRUE(status.ok()) << status.message();
+  std::string unique_id_hex = UniqueIdHex(unique_id);
 
   const int64_t count = 4;
   std::vector<float> rank0 = {1.0f, 3.0f, 5.0f, 7.0f};
@@ -47,17 +64,16 @@ TEST(DDP2GPUTest, TwoRanksAverageGradientBuckets) {
   ASSERT_TRUE(stream1_result.ok()) << stream1_result.status().message();
   CudaStream stream1 = stream1_result.take();
 
-  dist::NcclConfig config0;
-  config0.world_size = 2;
-  config0.rank = 0;
-  config0.local_gpu_id = 0;
-  std::memcpy(config0.unique_id, unique_id, sizeof(unique_id));
-
-  dist::NcclConfig config1;
-  config1.world_size = 2;
-  config1.rank = 1;
-  config1.local_gpu_id = 1;
-  std::memcpy(config1.unique_id, unique_id, sizeof(unique_id));
+  auto env0 = dist::parse_local_rank_env("0", "2", "0", unique_id_hex.c_str());
+  ASSERT_TRUE(env0.ok()) << env0.status().message();
+  auto env1 = dist::parse_local_rank_env("1", "2", "1", unique_id_hex.c_str());
+  ASSERT_TRUE(env1.ok()) << env1.status().message();
+  auto config0_result = dist::make_nccl_config(env0.value());
+  ASSERT_TRUE(config0_result.ok()) << config0_result.status().message();
+  auto config1_result = dist::make_nccl_config(env1.value());
+  ASSERT_TRUE(config1_result.ok()) << config1_result.status().message();
+  dist::NcclConfig config0 = config0_result.value();
+  dist::NcclConfig config1 = config1_result.value();
 
   dist::NcclContext nccl0;
   dist::NcclContext nccl1;

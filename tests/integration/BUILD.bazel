@@ -72,6 +72,7 @@ cc_test(
     timeout = "long",
     deps = [
         "//src/dist:ddp",
+        "//src/dist:local_rank_runtime",
         "//src/dist:nccl_context",
         "//tests:test_main",
         "@googletest//:gtest",

@@ -20,6 +20,7 @@
 #include "src/core/device.h"
 #include "src/data/batcher.h"
 #include "src/data/token_dataset.h"
+#include "src/dist/local_rank_runtime.h"
 #include "src/train/trainer.h"
 
 namespace {
@@ -55,22 +56,23 @@ void PrintStatus(char const* context, gpt::Status const& status, int rank) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  // Minimal rank detection for single-node multi-GPU.
-  // In production, use MPI or environment variables.
-  int rank = 0;
-  int world_size = 1;
-
-  char const* rank_env = std::getenv("RANK");
-  char const* world_env = std::getenv("WORLD_SIZE");
-  if (rank_env) {
-    rank = std::atoi(rank_env);
+  auto local_env = gpt::dist::parse_local_rank_env(
+      std::getenv("RANK"), std::getenv("WORLD_SIZE"),
+      std::getenv("LOCAL_RANK"), std::getenv("NCCL_UNIQUE_ID_HEX"));
+  if (!local_env.ok()) {
+    PrintStatus("Local rank env parse", local_env.status(), 0);
+    return 1;
   }
-  if (world_env) {
-    world_size = std::atoi(world_env);
+  auto nccl_config = gpt::dist::make_nccl_config(local_env.value());
+  if (!nccl_config.ok()) {
+    PrintStatus("NCCL config", nccl_config.status(), local_env.value().rank);
+    return 1;
   }
+  int const rank = local_env.value().rank;
+  int const world_size = local_env.value().world_size;
 
   // Set CUDA device.
-  gpt::DeviceGuard guard(rank);
+  gpt::DeviceGuard guard(local_env.value().local_gpu_id);
 
   char const* token_path = TokenPath(argc, argv);
   if (token_path == nullptr || token_path[0] == '\0') {
@@ -91,9 +93,7 @@ int main(int argc, char** argv) {
   config.model_config.max_seq_len = EnvInt64("GPT_SEQ_LEN", 1024);
   config.optimizer_config.lr = EnvFloat("GPT_LR", config.optimizer_config.lr);
 
-  config.nccl_config.rank = rank;
-  config.nccl_config.world_size = world_size;
-  config.nccl_config.local_gpu_id = rank;
+  config.nccl_config = nccl_config.value();
 
   config.max_steps = EnvInt64("GPT_MAX_STEPS", 1000);
   config.log_interval = EnvInt64("GPT_LOG_INTERVAL", 10);
