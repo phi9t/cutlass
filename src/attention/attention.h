@@ -19,6 +19,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include "src/core/allocator.h"
 #include "src/core/status.h"
@@ -80,6 +81,30 @@ struct AttentionForwardState {
   Tensor3D<float> context_merged; // [B, T, D]
 };
 
+class AttentionWorkspace {
+ public:
+  AttentionWorkspace() = default;
+
+  Status ensure(const AttentionConfig& config, int64_t B, int64_t T);
+
+  [[nodiscard]] AttentionForwardState& state() { return state_; }
+  [[nodiscard]] const AttentionForwardState& state() const { return state_; }
+
+  void release();
+  ~AttentionWorkspace();
+
+  AttentionWorkspace(const AttentionWorkspace&) = delete;
+  AttentionWorkspace& operator=(const AttentionWorkspace&) = delete;
+  AttentionWorkspace(AttentionWorkspace&& other) noexcept;
+  AttentionWorkspace& operator=(AttentionWorkspace&& other) noexcept;
+
+ private:
+  AttentionForwardState state_;
+  std::vector<float*> buffers_;
+  int64_t capacity_B_ = 0;
+  int64_t capacity_T_ = 0;
+};
+
 // ---------------------------------------------------------------------------
 // Forward
 //   X:      [B, T, D]
@@ -91,6 +116,13 @@ Status attention_forward(Tensor3D<const float> X,
                          const AttentionParams& params,
                          Tensor3D<float> output,
                          AttentionForwardState& state,
+                         const CudaStream& stream);
+
+Status attention_forward(Tensor3D<const float> X,
+                         const AttentionConfig& config,
+                         const AttentionParams& params,
+                         Tensor3D<float> output,
+                         AttentionWorkspace& workspace,
                          const CudaStream& stream);
 
 // ---------------------------------------------------------------------------

@@ -23,12 +23,6 @@ Tensor3D<float> Make3D(float* ptr, int64_t B, int64_t T, int64_t D) {
   return Tensor3D<float>{ptr, {B, T, D}, {T * D, D, 1}};
 }
 
-Tensor4D<float> Make4D(float* ptr, int64_t B, int64_t H, int64_t T,
-                       int64_t Dh) {
-  return Tensor4D<float>{ptr, {B, H, T, Dh},
-                         {H * T * Dh, T * Dh, Dh, 1}};
-}
-
 Tensor1D<float> Make1D(float* ptr, int64_t N) {
   return Tensor1D<float>{ptr, {N}, {1}};
 }
@@ -53,10 +47,10 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
   release();
 
   const int64_t D = config.d_model;
-  const int64_t H = config.n_heads;
   const int64_t mlp = config.mlp_hidden;
   const int64_t N = B * T;
 
+  const int64_t H = config.n_heads;
   if (D <= 0 || H <= 0 || mlp <= 0 || config.vocab_size <= 0) {
     return Status(StatusCode::kInvalidArgument,
                   "ForwardWorkspace::ensure: invalid model shape");
@@ -69,6 +63,7 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
 
   state_.block_inputs.clear();
   state_.blocks.clear();
+  attention_workspaces_.clear();
 
   auto add = [this](int64_t count) -> Result<float*> {
     float* ptr = nullptr;
@@ -84,6 +79,7 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
 
   state_.block_inputs.resize(static_cast<size_t>(config.n_layers));
   state_.blocks.resize(static_cast<size_t>(config.n_layers));
+  attention_workspaces_.resize(static_cast<size_t>(config.n_layers));
   for (int64_t layer = 0; layer < config.n_layers; ++layer) {
     auto block_input = add(N * D);
     if (!block_input.ok()) return block_input.status();
@@ -110,22 +106,16 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
     if (!gelu_out.ok()) return gelu_out.status();
     auto fc2_out = add(N * D);
     if (!fc2_out.ok()) return fc2_out.status();
-    auto qkv = add(N * 3 * D);
-    if (!qkv.ok()) return qkv.status();
-    auto Q = add(B * H * T * Dh);
-    if (!Q.ok()) return Q.status();
-    auto K = add(B * H * T * Dh);
-    if (!K.ok()) return K.status();
-    auto V = add(B * H * T * Dh);
-    if (!V.ok()) return V.status();
-    auto scores = add(B * H * T * T);
-    if (!scores.ok()) return scores.status();
-    auto probs = add(B * H * T * T);
-    if (!probs.ok()) return probs.status();
-    auto ctx = add(B * H * T * Dh);
-    if (!ctx.ok()) return ctx.status();
-    auto merged = add(N * D);
-    if (!merged.ok()) return merged.status();
+
+    attention::AttentionConfig attn_config;
+    attn_config.d_model = config.d_model;
+    attn_config.n_heads = config.n_heads;
+    attn_config.head_dim = config.head_dim();
+    attn_config.use_bias = config.use_bias;
+    attn_config.causal = true;
+    GPT_RETURN_IF_ERROR(
+        attention_workspaces_[static_cast<size_t>(layer)].ensure(attn_config,
+                                                                 B, T));
 
     block.ln1_out = Make3D(ln1_out.value(), B, T, D);
     block.ln2_out = Make3D(ln2_out.value(), B, T, D);
@@ -137,18 +127,8 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
     block.fc1_out = Make3D(fc1_out.value(), B, T, mlp);
     block.gelu_out = Make3D(gelu_out.value(), B, T, mlp);
     block.fc2_out = Make3D(fc2_out.value(), B, T, D);
-    block.attn_state.qkv = Make3D(qkv.value(), B, T, 3 * D);
-    block.attn_state.Q = Make4D(Q.value(), B, H, T, Dh);
-    block.attn_state.K = Make4D(K.value(), B, H, T, Dh);
-    block.attn_state.V = Make4D(V.value(), B, H, T, Dh);
-    block.attn_state.scores =
-        Tensor4D<float>{scores.value(), {B, H, T, T},
-                        {H * T * T, T * T, T, 1}};
-    block.attn_state.probs =
-        Tensor4D<float>{probs.value(), {B, H, T, T},
-                        {H * T * T, T * T, T, 1}};
-    block.attn_state.context = Make4D(ctx.value(), B, H, T, Dh);
-    block.attn_state.context_merged = Make3D(merged.value(), B, T, D);
+    block.attn_state =
+        attention_workspaces_[static_cast<size_t>(layer)].state();
   }
 
   auto final_ln = add(N * D);
@@ -176,6 +156,7 @@ void ForwardWorkspace::release() {
     cudaFree(ptr);
   }
   buffers_.clear();
+  attention_workspaces_.clear();
   state_ = GPTForwardState{};
   capacity_B_ = 0;
   capacity_T_ = 0;

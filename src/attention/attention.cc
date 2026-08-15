@@ -8,6 +8,8 @@
 
 #include <cuda_runtime.h>
 
+#include <utility>
+
 #include "src/attention/attention_backward_internal.h"
 #include "src/attention/attention_forward_internal.h"
 #include "src/kernels/gemm.h"
@@ -17,6 +19,161 @@
 
 namespace gpt {
 namespace attention {
+
+namespace {
+
+Status AllocF32(int64_t count, float** ptr) {
+  cudaError_t err =
+      cudaMalloc(ptr, static_cast<size_t>(count) * sizeof(float));
+  if (err != cudaSuccess) {
+    *ptr = nullptr;
+    return Status(StatusCode::kCudaError, cudaGetErrorString(err));
+  }
+  return Status::Ok();
+}
+
+Tensor3D<float> Make3D(float* ptr, int64_t B, int64_t T, int64_t D) {
+  return Tensor3D<float>{ptr, {B, T, D}, {T * D, D, 1}};
+}
+
+Tensor4D<float> Make4D(float* ptr, int64_t B, int64_t H, int64_t T,
+                       int64_t Dh) {
+  return Tensor4D<float>{ptr, {B, H, T, Dh},
+                         {H * T * Dh, T * Dh, Dh, 1}};
+}
+
+struct HeadViews {
+  Tensor3D<const float> q_flat;
+  Tensor3D<const float> k_flat;
+  Tensor3D<const float> v_flat;
+  Tensor3D<float> q_batched;
+  Tensor3D<float> k_batched;
+  Tensor3D<float> k_transposed_batched;
+  Tensor3D<float> v_batched;
+  Tensor3D<float> scores_batched;
+  Tensor3D<float> probs_batched;
+  Tensor3D<float> context_batched;
+};
+
+HeadViews MakeHeadViews(AttentionForwardState& state, int64_t B, int64_t T,
+                        int64_t D, int64_t H, int64_t Dh) {
+  HeadViews views;
+  views.q_flat = {state.qkv.data, {B, T, D}, {T * 3 * D, 3 * D, 1}};
+  views.k_flat = {state.qkv.data + D, {B, T, D}, {T * 3 * D, 3 * D, 1}};
+  views.v_flat = {state.qkv.data + 2 * D, {B, T, D},
+                  {T * 3 * D, 3 * D, 1}};
+  views.q_batched = {state.Q.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+  views.k_batched = {state.K.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+  views.k_transposed_batched =
+      Tensor3D<float>{state.K.data, {B * H, Dh, T}, {T * Dh, 1, Dh}};
+  views.v_batched = {state.V.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+  views.scores_batched =
+      {state.scores.data, {B * H, T, T}, {T * T, T, 1}};
+  views.probs_batched = {state.probs.data, {B * H, T, T}, {T * T, T, 1}};
+  views.context_batched =
+      {state.context.data, {B * H, T, Dh}, {T * Dh, Dh, 1}};
+  return views;
+}
+
+}  // namespace
+
+Status AttentionWorkspace::ensure(const AttentionConfig& config, int64_t B,
+                                  int64_t T) {
+  if (B <= 0 || T <= 0) {
+    return Status(StatusCode::kInvalidArgument,
+                  "AttentionWorkspace::ensure: empty batch");
+  }
+  if (config.d_model <= 0 || config.n_heads <= 0 || config.head_dim <= 0 ||
+      config.n_heads * config.head_dim != config.d_model) {
+    return Status(StatusCode::kInvalidArgument,
+                  "AttentionWorkspace::ensure: invalid attention shape");
+  }
+  if (capacity_B_ == B && capacity_T_ == T) {
+    return Status::Ok();
+  }
+
+  release();
+
+  const int64_t D = config.d_model;
+  const int64_t H = config.n_heads;
+  const int64_t Dh = config.head_dim;
+
+  auto add = [this](int64_t count) -> Result<float*> {
+    float* ptr = nullptr;
+    Status status = AllocF32(count, &ptr);
+    if (!status.ok()) return status;
+    buffers_.push_back(ptr);
+    return ptr;
+  };
+
+  auto qkv = add(B * T * 3 * D);
+  if (!qkv.ok()) return qkv.status();
+  auto Q = add(B * H * T * Dh);
+  if (!Q.ok()) return Q.status();
+  auto K = add(B * H * T * Dh);
+  if (!K.ok()) return K.status();
+  auto V = add(B * H * T * Dh);
+  if (!V.ok()) return V.status();
+  auto scores = add(B * H * T * T);
+  if (!scores.ok()) return scores.status();
+  auto probs = add(B * H * T * T);
+  if (!probs.ok()) return probs.status();
+  auto ctx = add(B * H * T * Dh);
+  if (!ctx.ok()) return ctx.status();
+  auto merged = add(B * T * D);
+  if (!merged.ok()) return merged.status();
+
+  state_.qkv = Make3D(qkv.value(), B, T, 3 * D);
+  state_.Q = Make4D(Q.value(), B, H, T, Dh);
+  state_.K = Make4D(K.value(), B, H, T, Dh);
+  state_.V = Make4D(V.value(), B, H, T, Dh);
+  state_.scores = Tensor4D<float>{scores.value(), {B, H, T, T},
+                                  {H * T * T, T * T, T, 1}};
+  state_.probs = Tensor4D<float>{probs.value(), {B, H, T, T},
+                                 {H * T * T, T * T, T, 1}};
+  state_.context = Make4D(ctx.value(), B, H, T, Dh);
+  state_.context_merged = Make3D(merged.value(), B, T, D);
+  capacity_B_ = B;
+  capacity_T_ = T;
+  return Status::Ok();
+}
+
+void AttentionWorkspace::release() {
+  for (float* ptr : buffers_) {
+    cudaFree(ptr);
+  }
+  buffers_.clear();
+  state_ = AttentionForwardState{};
+  capacity_B_ = 0;
+  capacity_T_ = 0;
+}
+
+AttentionWorkspace::~AttentionWorkspace() { release(); }
+
+AttentionWorkspace::AttentionWorkspace(AttentionWorkspace&& other) noexcept
+    : state_(other.state_),
+      buffers_(std::move(other.buffers_)),
+      capacity_B_(other.capacity_B_),
+      capacity_T_(other.capacity_T_) {
+  other.state_ = AttentionForwardState{};
+  other.capacity_B_ = 0;
+  other.capacity_T_ = 0;
+}
+
+AttentionWorkspace& AttentionWorkspace::operator=(
+    AttentionWorkspace&& other) noexcept {
+  if (this != &other) {
+    release();
+    state_ = other.state_;
+    buffers_ = std::move(other.buffers_);
+    capacity_B_ = other.capacity_B_;
+    capacity_T_ = other.capacity_T_;
+    other.state_ = AttentionForwardState{};
+    other.capacity_B_ = 0;
+    other.capacity_T_ = 0;
+  }
+  return *this;
+}
 
 Status attention_forward(Tensor3D<const float> X,
                          const AttentionConfig& config,
@@ -58,55 +215,23 @@ Status attention_forward(Tensor3D<const float> X,
   // Step 2: Split Q, K, V and reshape to head layout [B, H, T, Dh].
   // state.qkv is [B, T, 3*D].  Split into three [B, T, D] and repack.
   {
-    // QKV is laid out as [B, T, 3, H, Dh] = [B, T, 3*D], with Q/K/V chunks
-    // at offsets 0, D, and 2D inside each row. split_heads_f32 reads those
-    // strided views and writes contiguous [B, H, T, Dh] buffers.
-
-    // Q
-    Tensor3D<const float> Q_flat;
-    Q_flat.data = state.qkv.data;  // offset 0
-    Q_flat.shape = {B, T, D};
-    Q_flat.stride = {T * 3 * D, 3 * D, 1};
-
+    HeadViews heads = MakeHeadViews(state, B, T, D, H, Dh);
     GPT_RETURN_IF_ERROR(
-        kernels::split_heads_f32(Q_flat, state.Q, H, stream));
-
-    Tensor3D<const float> K_flat;
-    K_flat.data = state.qkv.data + D;
-    K_flat.shape = {B, T, D};
-    K_flat.stride = {T * 3 * D, 3 * D, 1};
+        kernels::split_heads_f32(heads.q_flat, state.Q, H, stream));
     GPT_RETURN_IF_ERROR(
-        kernels::split_heads_f32(K_flat, state.K, H, stream));
-
-    Tensor3D<const float> V_flat;
-    V_flat.data = state.qkv.data + 2 * D;
-    V_flat.shape = {B, T, D};
-    V_flat.stride = {T * 3 * D, 3 * D, 1};
+        kernels::split_heads_f32(heads.k_flat, state.K, H, stream));
     GPT_RETURN_IF_ERROR(
-        kernels::split_heads_f32(V_flat, state.V, H, stream));
+        kernels::split_heads_f32(heads.v_flat, state.V, H, stream));
   }
 
   // Step 3-4: Scores = Q @ K^T, optionally fused scale + causal mask.
   // Q: [B*H, T, Dh], K^T: [B*H, Dh, T] → scores: [B*H, T, T]
   {
-    Tensor3D<float> Q_3d;
-    Q_3d.data = state.Q.data;
-    Q_3d.shape = {B * H, T, Dh};
-    Q_3d.stride = {T * Dh, Dh, 1};
-
-    Tensor3D<float> K_3d;
-    K_3d.data = state.K.data;
-    K_3d.shape = {B * H, Dh, T};
-    K_3d.stride = {T * Dh, 1, Dh};  // transposed last two dims
-
-    Tensor3D<float> S_3d;
-    S_3d.data = state.scores.data;
-    S_3d.shape = {B * H, T, T};
-    S_3d.stride = {T * T, T, 1};
-
+    HeadViews heads = MakeHeadViews(state, B, T, D, H, Dh);
     float alpha = config.causal ? 1.0f : config.scale();
-    GPT_RETURN_IF_ERROR(
-        kernels::batched_gemm_f32(Q_3d, K_3d, S_3d, alpha, 0.0f, stream));
+    GPT_RETURN_IF_ERROR(kernels::batched_gemm_f32(
+        heads.q_batched, heads.k_transposed_batched, heads.scores_batched,
+        alpha, 0.0f, stream));
     if (config.causal) {
       GPT_RETURN_IF_ERROR(
           scale_and_causal_mask_scores_f32(state.scores, config.scale(), stream));
@@ -138,23 +263,10 @@ Status attention_forward(Tensor3D<const float> X,
   // Step 7: Context = P @ V.
   // P: [B*H, T, T], V: [B*H, T, Dh] → context: [B*H, T, Dh]
   {
-    Tensor3D<float> P_3d;
-    P_3d.data = state.probs.data;
-    P_3d.shape = {B * H, T, T};
-    P_3d.stride = {T * T, T, 1};
-
-    Tensor3D<float> V_3d;
-    V_3d.data = state.V.data;
-    V_3d.shape = {B * H, T, Dh};
-    V_3d.stride = {T * Dh, Dh, 1};
-
-    Tensor3D<float> C_3d;
-    C_3d.data = state.context.data;
-    C_3d.shape = {B * H, T, Dh};
-    C_3d.stride = {T * Dh, Dh, 1};
-
+    HeadViews heads = MakeHeadViews(state, B, T, D, H, Dh);
     GPT_RETURN_IF_ERROR(kernels::batched_gemm_f32(
-        P_3d, V_3d, C_3d, 1.0f, 0.0f, stream));
+        heads.probs_batched, heads.v_batched, heads.context_batched, 1.0f,
+        0.0f, stream));
   }
 
   // Step 8: Merge heads [B, H, T, Dh] → [B, T, D].
@@ -182,6 +294,16 @@ Status attention_forward(Tensor3D<const float> X,
   }
 
   return Status::Ok();
+}
+
+Status attention_forward(Tensor3D<const float> X,
+                         const AttentionConfig& config,
+                         const AttentionParams& params,
+                         Tensor3D<float> output,
+                         AttentionWorkspace& workspace,
+                         const CudaStream& stream) {
+  GPT_RETURN_IF_ERROR(workspace.ensure(config, X.shape[0], X.shape[1]));
+  return attention_forward(X, config, params, output, workspace.state(), stream);
 }
 
 Status attention_backward(Tensor3D<const float> dO,

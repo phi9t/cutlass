@@ -30,6 +30,7 @@ class ForwardWorkspace {
  private:
   GPTForwardState state_;
   std::vector<float*> buffers_;
+  std::vector<attention::AttentionWorkspace> attention_workspaces_;
   int64_t capacity_B_ = 0;
   int64_t capacity_T_ = 0;
 };
