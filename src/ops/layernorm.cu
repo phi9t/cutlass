@@ -123,8 +123,8 @@ Status layernorm_backward(Tensor2D<const float> dy,
   int64_t rows = x.shape[0];
   int64_t D = x.shape[1];
 
-  // v1: one block per row, single thread for correctness.
-  // TODO(perf): warp-level or block-level reduction for large D.
+  // v1 reference path: one block per row, single thread for correctness.
+  // Large-D optimization should use warp- or block-level reductions.
   layernorm_backward_kernel<<<static_cast<int>(rows), 1, 0, stream.get()>>>(
       dy.data, x.data, params.gamma.data,
       state.mean.data, state.inv_std.data,

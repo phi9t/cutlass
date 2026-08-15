@@ -83,12 +83,14 @@ closed test-first:
 - `src/dist/ddp.cc` now averages buckets by `1/world_size` after all-reduce.
   `tests/integration/ddp_2gpu_test.cc` initializes two NCCL ranks on two GPUs
   with a shared unique ID and verifies averaged gradient buckets on both ranks.
+- `tests/perf/{gemm_perf,attention_perf}.cc` now run real CUDA-event timing
+  smoke tests instead of placeholders.
 
 ## Next recommended scaffold frontier
 
-The next larger follow-on work is hardening and performance: replacing remaining
-perf placeholders with measured kernels and optimizing known reference paths
-such as LayerNorm backward.
+The next larger follow-on work is hardening and performance: optimizing known
+reference paths such as LayerNorm backward and adding numeric throughput gates
+once stable baselines are available.
 
 Keep landing local-only unless explicitly told to push.
 
