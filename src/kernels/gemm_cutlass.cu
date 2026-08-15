@@ -218,9 +218,11 @@ Status gemm_f32(Tensor2D<float> A, Tensor2D<float> B, Tensor2D<float> C,
 Status gemm_bf16(Tensor2D<__nv_bfloat16> A, Tensor2D<__nv_bfloat16> B,
                  Tensor2D<__nv_bfloat16> C, float alpha, float beta,
                  const CudaStream& stream, GemmBackend backend) {
+  if (backend == GemmBackend::kCublasLt) {
+    return gemm_bf16_cublaslt(A, B, C, alpha, beta, stream);
+  }
   if (backend != GemmBackend::kCutlass) {
-    return Status(StatusCode::kNotImplemented,
-                  "Only CUTLASS backend implemented here");
+    return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
   if (A.shape[1] != B.shape[0]) {
     return Status(StatusCode::kInvalidArgument, "GEMM K-dim mismatch");

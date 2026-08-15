@@ -53,11 +53,10 @@ Status create_layout(cublasLtMatrixLayout_t* layout, cudaDataType type,
   return Status::Ok();
 }
 
-}  // namespace
-
-Status gemm_f32_cublaslt(Tensor2D<float> A, Tensor2D<float> B,
-                         Tensor2D<float> C, float alpha, float beta,
-                         const CudaStream& stream) {
+template <typename T>
+Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
+                          cudaDataType type, const char* context, float alpha,
+                          float beta, const CudaStream& stream) {
   if (A.shape[1] != B.shape[0]) {
     return Status(StatusCode::kInvalidArgument, "GEMM K-dim mismatch");
   }
@@ -73,8 +72,8 @@ Status gemm_f32_cublaslt(Tensor2D<float> A, Tensor2D<float> B,
       b_order == MatrixOrder::kUnsupported ||
       c_order == MatrixOrder::kUnsupported) {
     return Status(StatusCode::kInvalidArgument,
-                  "gemm_f32_cublaslt: unsupported strides (need unit-stride "
-                  "axis per operand)");
+                  std::string(context) +
+                      ": unsupported strides (need unit-stride axis per operand)");
   }
 
   cublasLtHandle_t handle = nullptr;
@@ -103,20 +102,17 @@ Status gemm_f32_cublaslt(Tensor2D<float> A, Tensor2D<float> B,
     return result;
   }
 
-  result = create_layout(&a_layout, CUDA_R_32F, A.shape[0], A.shape[1], lda,
-                         a_order);
+  result = create_layout(&a_layout, type, A.shape[0], A.shape[1], lda, a_order);
   if (!result.ok()) {
     cleanup();
     return result;
   }
-  result = create_layout(&b_layout, CUDA_R_32F, B.shape[0], B.shape[1], ldb,
-                         b_order);
+  result = create_layout(&b_layout, type, B.shape[0], B.shape[1], ldb, b_order);
   if (!result.ok()) {
     cleanup();
     return result;
   }
-  result = create_layout(&c_layout, CUDA_R_32F, C.shape[0], C.shape[1], ldc,
-                         c_order);
+  result = create_layout(&c_layout, type, C.shape[0], C.shape[1], ldc, c_order);
   if (!result.ok()) {
     cleanup();
     return result;
@@ -130,6 +126,23 @@ Status gemm_f32_cublaslt(Tensor2D<float> A, Tensor2D<float> B,
   if (!result.ok()) return result;
   GPT_CHECK_CUDA(cudaGetLastError());
   return Status::Ok();
+}
+
+}  // namespace
+
+Status gemm_f32_cublaslt(Tensor2D<float> A, Tensor2D<float> B,
+                         Tensor2D<float> C, float alpha, float beta,
+                         const CudaStream& stream) {
+  return gemm_cublaslt_impl(A, B, C, CUDA_R_32F, "gemm_f32_cublaslt", alpha,
+                            beta, stream);
+}
+
+Status gemm_bf16_cublaslt(Tensor2D<__nv_bfloat16> A,
+                          Tensor2D<__nv_bfloat16> B,
+                          Tensor2D<__nv_bfloat16> C, float alpha, float beta,
+                          const CudaStream& stream) {
+  return gemm_cublaslt_impl(A, B, C, CUDA_R_16BF, "gemm_bf16_cublaslt", alpha,
+                            beta, stream);
 }
 
 }  // namespace kernels

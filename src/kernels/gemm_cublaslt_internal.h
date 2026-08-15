@@ -12,5 +12,10 @@ Status gemm_f32_cublaslt(Tensor2D<float> A, Tensor2D<float> B,
                          Tensor2D<float> C, float alpha, float beta,
                          const CudaStream& stream);
 
+Status gemm_bf16_cublaslt(Tensor2D<__nv_bfloat16> A,
+                          Tensor2D<__nv_bfloat16> B,
+                          Tensor2D<__nv_bfloat16> C, float alpha, float beta,
+                          const CudaStream& stream);
+
 }  // namespace kernels
 }  // namespace gpt
