@@ -54,6 +54,118 @@ TEST_F(GemmTest, ValidShapeAccepted) {
   cudaFree(d_buf);
 }
 
+TEST_F(GemmTest, CublasLtF32GemmMatchesCPUReference) {
+  const int64_t M = 3, K = 4, N = 3;
+  std::vector<float> h_a = {
+      1.0f, -2.0f, 3.0f, 0.5f,
+      2.0f, 1.0f, -1.0f, 4.0f,
+      -0.5f, 3.0f, 2.0f, -1.5f,
+  };
+  std::vector<float> h_b = {
+      1.0f, -1.0f, 0.5f,
+      0.5f, 2.0f, -2.0f,
+      -2.0f, 1.5f, 1.0f,
+      3.0f, -0.5f, 2.0f,
+  };
+  std::vector<float> h_c(M * N, 0.0f);
+
+  float *d_a, *d_b, *d_c;
+  cudaMalloc(&d_a, h_a.size() * sizeof(float));
+  cudaMalloc(&d_b, h_b.size() * sizeof(float));
+  cudaMalloc(&d_c, h_c.size() * sizeof(float));
+  cudaMemcpy(d_a, h_a.data(), h_a.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b, h_b.data(), h_b.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_c, h_c.data(), h_c.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  Tensor2D<float> A{d_a, {M, K}, {K, 1}};
+  Tensor2D<float> B{d_b, {K, N}, {N, 1}};
+  Tensor2D<float> C{d_c, {M, N}, {N, 1}};
+
+  auto status = gemm_f32(A, B, C, 1.0f, 0.0f, stream_, GemmBackend::kCublasLt);
+  ASSERT_TRUE(status.ok()) << status.message();
+  stream_.synchronize();
+
+  std::vector<float> h_output(M * N);
+  cudaMemcpy(h_output.data(), d_c, h_output.size() * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  std::vector<float> expected(M * N, 0.0f);
+  for (int64_t m = 0; m < M; ++m) {
+    for (int64_t n = 0; n < N; ++n) {
+      for (int64_t k = 0; k < K; ++k) {
+        expected[m * N + n] += h_a[m * K + k] * h_b[k * N + n];
+      }
+    }
+  }
+
+  EXPECT_TRUE(test::vectors_near(h_output, expected, 1e-4f, 1e-5f));
+
+  cudaFree(d_a);
+  cudaFree(d_b);
+  cudaFree(d_c);
+}
+
+TEST_F(GemmTest, CublasLtF32GemmAcceptsColumnMajorOperandView) {
+  const int64_t M = 2, K = 3, N = 3;
+  std::vector<float> h_a = {
+      1.0f, -2.0f, 3.0f,
+      0.5f, 2.0f, -1.0f,
+  };
+  std::vector<float> h_b_logical = {
+      2.0f, -1.0f, 0.5f,
+      -0.5f, 3.0f, 1.5f,
+      4.0f, 0.0f, -2.0f,
+  };
+  std::vector<float> h_b_colmajor(K * N);
+  std::vector<float> h_c(M * N, 0.0f);
+  for (int64_t k = 0; k < K; ++k) {
+    for (int64_t n = 0; n < N; ++n) {
+      h_b_colmajor[k + n * K] = h_b_logical[k * N + n];
+    }
+  }
+
+  float *d_a, *d_b, *d_c;
+  cudaMalloc(&d_a, h_a.size() * sizeof(float));
+  cudaMalloc(&d_b, h_b_colmajor.size() * sizeof(float));
+  cudaMalloc(&d_c, h_c.size() * sizeof(float));
+  cudaMemcpy(d_a, h_a.data(), h_a.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b, h_b_colmajor.data(), h_b_colmajor.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+  cudaMemcpy(d_c, h_c.data(), h_c.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  Tensor2D<float> A{d_a, {M, K}, {K, 1}};
+  Tensor2D<float> B{d_b, {K, N}, {1, K}};
+  Tensor2D<float> C{d_c, {M, N}, {N, 1}};
+
+  auto status = gemm_f32(A, B, C, 1.0f, 0.0f, stream_, GemmBackend::kCublasLt);
+  ASSERT_TRUE(status.ok()) << status.message();
+  stream_.synchronize();
+
+  std::vector<float> h_output(M * N);
+  cudaMemcpy(h_output.data(), d_c, h_output.size() * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  std::vector<float> expected(M * N, 0.0f);
+  for (int64_t m = 0; m < M; ++m) {
+    for (int64_t n = 0; n < N; ++n) {
+      for (int64_t k = 0; k < K; ++k) {
+        expected[m * N + n] += h_a[m * K + k] * h_b_logical[k * N + n];
+      }
+    }
+  }
+
+  EXPECT_TRUE(test::vectors_near(h_output, expected, 1e-4f, 1e-5f));
+
+  cudaFree(d_a);
+  cudaFree(d_b);
+  cudaFree(d_c);
+}
+
 TEST_F(GemmTest, Bf16GemmMatchesCPUReference) {
   const int64_t M = 4, K = 5, N = 3;
   std::vector<float> h_a = {

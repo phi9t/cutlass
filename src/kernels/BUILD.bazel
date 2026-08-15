@@ -13,7 +13,10 @@ package(default_visibility = [
 
 cuda_library(
     name = "gemm",
-    hdrs = ["gemm.h"],
+    hdrs = [
+        "gemm.h",
+        "gemm_cublaslt_internal.h",
+    ],
     srcs = [
         "gemm_cutlass.cu",
         "gemm_cublaslt.cc",

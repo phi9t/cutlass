@@ -25,6 +25,7 @@
 #include "cutlass/bfloat16.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/gemm/device/gemm_batched.h"
+#include "src/kernels/gemm_cublaslt_internal.h"
 
 namespace gpt {
 namespace kernels {
@@ -138,9 +139,11 @@ cutlass::Status launch_gemm_batched_bf16(
 Status gemm_f32(Tensor2D<float> A, Tensor2D<float> B, Tensor2D<float> C,
                 float alpha, float beta, const CudaStream& stream,
                 GemmBackend backend) {
+  if (backend == GemmBackend::kCublasLt) {
+    return gemm_f32_cublaslt(A, B, C, alpha, beta, stream);
+  }
   if (backend != GemmBackend::kCutlass) {
-    return Status(StatusCode::kNotImplemented,
-                  "Only CUTLASS backend implemented here");
+    return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
   // Validate shapes.
   if (A.shape[1] != B.shape[0]) {
