@@ -17,7 +17,9 @@ namespace kernels {
 namespace {
 
 Status cublas_status(cublasStatus_t status, const char* context) {
-  if (status == CUBLAS_STATUS_SUCCESS) return Status::Ok();
+  if (status == CUBLAS_STATUS_SUCCESS) {
+    return Status::Ok();
+  }
   return Status(StatusCode::kCudaError,
                 std::string(context) + " failed with cuBLAS status " +
                     std::to_string(static_cast<int>(status)));
@@ -55,16 +57,17 @@ Status set_batch_layout(cublasLtMatrixLayout_t layout, int32_t batch_count,
   return Status::Ok();
 }
 
+void destroy_layout(cublasLtMatrixLayout_t layout) {
+  if (layout != nullptr) {
+    cublasLtMatrixLayoutDestroy(layout);
+  }
+}
+
 template <typename T>
 Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
+                          const GemmProblem& problem,
                           cudaDataType type, const char* context, float alpha,
-                          float beta, const CudaStream& stream,
-                          int32_t batch_count = 1, int64_t batch_a = 0,
-                          int64_t batch_b = 0, int64_t batch_c = 0) {
-  Result<GemmProblem> problem_result = make_gemm_problem(A, B, C);
-  if (!problem_result.ok()) return problem_result.status();
-  GemmProblem problem = problem_result.value();
-
+                          float beta, const CudaStream& stream) {
   cublasLtHandle_t handle = nullptr;
   cublasLtMatmulDesc_t matmul = nullptr;
   cublasLtMatrixLayout_t a_layout = nullptr;
@@ -76,11 +79,15 @@ Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
   }
 
   auto cleanup = [&]() {
-    if (c_layout) cublasLtMatrixLayoutDestroy(c_layout);
-    if (b_layout) cublasLtMatrixLayoutDestroy(b_layout);
-    if (a_layout) cublasLtMatrixLayoutDestroy(a_layout);
-    if (matmul) cublasLtMatmulDescDestroy(matmul);
-    if (handle) cublasLtDestroy(handle);
+    destroy_layout(c_layout);
+    destroy_layout(b_layout);
+    destroy_layout(a_layout);
+    if (matmul != nullptr) {
+      cublasLtMatmulDescDestroy(matmul);
+    }
+    if (handle != nullptr) {
+      cublasLtDestroy(handle);
+    }
   };
 
   Status result = cublas_status(
@@ -109,18 +116,19 @@ Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
     cleanup();
     return result;
   }
-  if (batch_count > 1) {
-    result = set_batch_layout(a_layout, batch_count, batch_a);
+  if (problem.batch_count > 1) {
+    int32_t batch_count = static_cast<int32_t>(problem.batch_count);
+    result = set_batch_layout(a_layout, batch_count, problem.batch_stride_a);
     if (!result.ok()) {
       cleanup();
       return result;
     }
-    result = set_batch_layout(b_layout, batch_count, batch_b);
+    result = set_batch_layout(b_layout, batch_count, problem.batch_stride_b);
     if (!result.ok()) {
       cleanup();
       return result;
     }
-    result = set_batch_layout(c_layout, batch_count, batch_c);
+    result = set_batch_layout(c_layout, batch_count, problem.batch_stride_c);
     if (!result.ok()) {
       cleanup();
       return result;
@@ -132,9 +140,17 @@ Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
                           nullptr, nullptr, 0, stream.get());
   result = cublas_status(status, "cublasLtMatmul");
   cleanup();
-  if (!result.ok()) return result;
+  if (!result.ok()) {
+    return result;
+  }
   GPT_CHECK_CUDA(cudaGetLastError());
   return Status::Ok();
+}
+
+template <typename T>
+Tensor2D<T> batch_slice(Tensor3D<T> tensor) {
+  return Tensor2D<T>{tensor.data, {tensor.shape[1], tensor.shape[2]},
+                     {tensor.stride[1], tensor.stride[2]}};
 }
 
 }  // namespace
@@ -142,61 +158,49 @@ Status gemm_cublaslt_impl(Tensor2D<T> A, Tensor2D<T> B, Tensor2D<T> C,
 Status gemm_f32_cublaslt(Tensor2D<float> A, Tensor2D<float> B,
                          Tensor2D<float> C, float alpha, float beta,
                          const CudaStream& stream) {
-  return gemm_cublaslt_impl(A, B, C, CUDA_R_32F, "gemm_f32_cublaslt", alpha,
-                            beta, stream);
+  Result<GemmProblem> problem = make_gemm_problem(A, B, C);
+  if (!problem.ok()) {
+    return problem.status();
+  }
+  return gemm_cublaslt_impl(A, B, C, problem.value(), CUDA_R_32F,
+                            "gemm_f32_cublaslt", alpha, beta, stream);
 }
 
 Status gemm_bf16_cublaslt(Tensor2D<__nv_bfloat16> A,
                           Tensor2D<__nv_bfloat16> B,
                           Tensor2D<__nv_bfloat16> C, float alpha, float beta,
                           const CudaStream& stream) {
-  return gemm_cublaslt_impl(A, B, C, CUDA_R_16BF, "gemm_bf16_cublaslt", alpha,
-                            beta, stream);
+  Result<GemmProblem> problem = make_gemm_problem(A, B, C);
+  if (!problem.ok()) {
+    return problem.status();
+  }
+  return gemm_cublaslt_impl(A, B, C, problem.value(), CUDA_R_16BF,
+                            "gemm_bf16_cublaslt", alpha, beta, stream);
 }
 
 Status batched_gemm_f32_cublaslt(Tensor3D<float> A, Tensor3D<float> B,
                                  Tensor3D<float> C, float alpha, float beta,
                                  const CudaStream& stream) {
-  if (A.shape[0] != B.shape[0] || A.shape[0] != C.shape[0]) {
-    return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM batch-dim mismatch");
+  Result<GemmProblem> problem = make_batched_gemm_problem(A, B, C);
+  if (!problem.ok()) {
+    return problem.status();
   }
-  Tensor2D<float> a{A.data,
-                    {A.shape[1], A.shape[2]},
-                    {A.stride[1], A.stride[2]}};
-  Tensor2D<float> b{B.data,
-                    {B.shape[1], B.shape[2]},
-                    {B.stride[1], B.stride[2]}};
-  Tensor2D<float> c{C.data,
-                    {C.shape[1], C.shape[2]},
-                    {C.stride[1], C.stride[2]}};
-  return gemm_cublaslt_impl(a, b, c, CUDA_R_32F, "batched_gemm_f32_cublaslt",
-                            alpha, beta, stream,
-                            static_cast<int32_t>(A.shape[0]), A.stride[0],
-                            B.stride[0], C.stride[0]);
+  return gemm_cublaslt_impl(batch_slice(A), batch_slice(B), batch_slice(C),
+                            problem.value(), CUDA_R_32F,
+                            "batched_gemm_f32_cublaslt", alpha, beta, stream);
 }
 
 Status batched_gemm_bf16_cublaslt(Tensor3D<__nv_bfloat16> A,
                                   Tensor3D<__nv_bfloat16> B,
                                   Tensor3D<__nv_bfloat16> C, float alpha,
                                   float beta, const CudaStream& stream) {
-  if (A.shape[0] != B.shape[0] || A.shape[0] != C.shape[0]) {
-    return Status(StatusCode::kInvalidArgument,
-                  "Batched GEMM batch-dim mismatch");
+  Result<GemmProblem> problem = make_batched_gemm_problem(A, B, C);
+  if (!problem.ok()) {
+    return problem.status();
   }
-  Tensor2D<__nv_bfloat16> a{A.data,
-                            {A.shape[1], A.shape[2]},
-                            {A.stride[1], A.stride[2]}};
-  Tensor2D<__nv_bfloat16> b{B.data,
-                            {B.shape[1], B.shape[2]},
-                            {B.stride[1], B.stride[2]}};
-  Tensor2D<__nv_bfloat16> c{C.data,
-                            {C.shape[1], C.shape[2]},
-                            {C.stride[1], C.stride[2]}};
-  return gemm_cublaslt_impl(a, b, c, CUDA_R_16BF,
-                            "batched_gemm_bf16_cublaslt", alpha, beta, stream,
-                            static_cast<int32_t>(A.shape[0]), A.stride[0],
-                            B.stride[0], C.stride[0]);
+  return gemm_cublaslt_impl(batch_slice(A), batch_slice(B), batch_slice(C),
+                            problem.value(), CUDA_R_16BF,
+                            "batched_gemm_bf16_cublaslt", alpha, beta, stream);
 }
 
 }  // namespace kernels

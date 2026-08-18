@@ -30,9 +30,15 @@ Result<int> parse_int(char const* text, int fallback, char const* name) {
 }
 
 int hex_value(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return 10 + c - 'a';
-  if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return 10 + c - 'a';
+  }
+  if (c >= 'A' && c <= 'F') {
+    return 10 + c - 'A';
+  }
   return -1;
 }
 
@@ -64,15 +70,23 @@ Result<LocalRankEnv> parse_local_rank_env(char const* rank,
                                           char const* local_rank,
                                           char const* unique_id_hex) {
   Result<int> parsed_rank = parse_int(rank, 0, "RANK");
-  if (!parsed_rank.ok()) return parsed_rank.status();
+  if (!parsed_rank.ok()) {
+    return parsed_rank.status();
+  }
   Result<int> parsed_world_size = parse_int(world_size, 1, "WORLD_SIZE");
-  if (!parsed_world_size.ok()) return parsed_world_size.status();
+  if (!parsed_world_size.ok()) {
+    return parsed_world_size.status();
+  }
   Result<int> parsed_local_rank =
       parse_int(local_rank, parsed_rank.value(), "LOCAL_RANK");
-  if (!parsed_local_rank.ok()) return parsed_local_rank.status();
+  if (!parsed_local_rank.ok()) {
+    return parsed_local_rank.status();
+  }
   Result<std::array<unsigned char, 128>> parsed_id =
       parse_unique_id(unique_id_hex);
-  if (!parsed_id.ok()) return parsed_id.status();
+  if (!parsed_id.ok()) {
+    return parsed_id.status();
+  }
 
   LocalRankEnv env;
   env.rank = parsed_rank.value();

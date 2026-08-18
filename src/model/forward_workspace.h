@@ -33,6 +33,11 @@ class ForwardWorkspace {
   std::vector<attention::AttentionWorkspace> attention_workspaces_;
   int64_t capacity_B_ = 0;
   int64_t capacity_T_ = 0;
+  int64_t capacity_d_model_ = 0;
+  int64_t capacity_n_layers_ = 0;
+  int64_t capacity_n_heads_ = 0;
+  int64_t capacity_mlp_hidden_ = 0;
+  int64_t capacity_vocab_size_ = 0;
 };
 
 }  // namespace model

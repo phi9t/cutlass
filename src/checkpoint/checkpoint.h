@@ -40,31 +40,5 @@ Status save_training_snapshot(const std::string& dir,
 Status load_training_snapshot(const std::string& dir,
                               TrainingSnapshot& snapshot);
 
-// Save a checkpoint to disk.
-//   dir:     checkpoint directory (will be created if needed)
-//   params:  device pointer to flat parameter buffer
-//   opt_m:   device pointer to optimizer first moment
-//   opt_v:   device pointer to optimizer second moment
-//   meta:    checkpoint metadata
-Status save_checkpoint(const std::string& dir,
-                       const float* params,
-                       const float* opt_m,
-                       const float* opt_v,
-                       int64_t param_count,
-                       const CheckpointMetadata& meta);
-
-// Load a checkpoint from disk.
-//   dir:     checkpoint directory
-//   params:  device pointer (pre-allocated)
-//   opt_m:   device pointer (pre-allocated)
-//   opt_v:   device pointer (pre-allocated)
-//   meta:    filled with loaded metadata
-Status load_checkpoint(const std::string& dir,
-                       float* params,
-                       float* opt_m,
-                       float* opt_v,
-                       int64_t param_count,
-                       CheckpointMetadata& meta);
-
 }  // namespace checkpoint
 }  // namespace gpt

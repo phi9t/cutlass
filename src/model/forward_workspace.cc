@@ -40,18 +40,13 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
                   "ForwardWorkspace::ensure: sequence length exceeds "
                   "max_seq_len");
   }
-  if (capacity_B_ == B && capacity_T_ == T) {
-    return Status::Ok();
-  }
-
-  release();
-
   const int64_t D = config.d_model;
   const int64_t mlp = config.mlp_hidden;
   const int64_t N = B * T;
 
   const int64_t H = config.n_heads;
-  if (D <= 0 || H <= 0 || mlp <= 0 || config.vocab_size <= 0) {
+  if (D <= 0 || H <= 0 || mlp <= 0 || config.vocab_size <= 0 ||
+      config.n_layers < 0) {
     return Status(StatusCode::kInvalidArgument,
                   "ForwardWorkspace::ensure: invalid model shape");
   }
@@ -60,6 +55,16 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
     return Status(StatusCode::kInvalidArgument,
                   "ForwardWorkspace::ensure: invalid model shape");
   }
+  if (capacity_B_ == B && capacity_T_ == T &&
+      capacity_d_model_ == config.d_model &&
+      capacity_n_layers_ == config.n_layers &&
+      capacity_n_heads_ == config.n_heads &&
+      capacity_mlp_hidden_ == config.mlp_hidden &&
+      capacity_vocab_size_ == config.vocab_size) {
+    return Status::Ok();
+  }
+
+  release();
 
   state_.block_inputs.clear();
   state_.blocks.clear();
@@ -127,6 +132,7 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
     block.fc1_out = Make3D(fc1_out.value(), B, T, mlp);
     block.gelu_out = Make3D(gelu_out.value(), B, T, mlp);
     block.fc2_out = Make3D(fc2_out.value(), B, T, D);
+    block.attn_workspace = &attention_workspaces_[static_cast<size_t>(layer)];
     block.attn_state =
         attention_workspaces_[static_cast<size_t>(layer)].state();
   }
@@ -148,6 +154,11 @@ Status ForwardWorkspace::ensure(const GPTConfig& config, int64_t B,
 
   capacity_B_ = B;
   capacity_T_ = T;
+  capacity_d_model_ = config.d_model;
+  capacity_n_layers_ = config.n_layers;
+  capacity_n_heads_ = config.n_heads;
+  capacity_mlp_hidden_ = config.mlp_hidden;
+  capacity_vocab_size_ = config.vocab_size;
   return Status::Ok();
 }
 
@@ -160,6 +171,11 @@ void ForwardWorkspace::release() {
   state_ = GPTForwardState{};
   capacity_B_ = 0;
   capacity_T_ = 0;
+  capacity_d_model_ = 0;
+  capacity_n_layers_ = 0;
+  capacity_n_heads_ = 0;
+  capacity_mlp_hidden_ = 0;
+  capacity_vocab_size_ = 0;
 }
 
 ForwardWorkspace::~ForwardWorkspace() { release(); }

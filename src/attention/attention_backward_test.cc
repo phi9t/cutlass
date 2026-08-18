@@ -206,7 +206,6 @@ TEST(AttentionBackwardTest, TinyBackwardMatchesCPU) {
   float *d_X, *d_dO, *d_out, *d_dX;
   float *d_W_qkv, *d_b_qkv, *d_W_o, *d_b_o;
   float *d_dW_qkv, *d_db_qkv, *d_dW_o, *d_db_o;
-  float *d_qkv, *d_Q, *d_K, *d_V, *d_scores, *d_probs, *d_ctx, *d_merged;
   cudaMalloc(&d_X, B * T * D * sizeof(float));
   cudaMalloc(&d_dO, B * T * D * sizeof(float));
   cudaMalloc(&d_out, B * T * D * sizeof(float));
@@ -219,14 +218,6 @@ TEST(AttentionBackwardTest, TinyBackwardMatchesCPU) {
   cudaMalloc(&d_db_qkv, 3 * D * sizeof(float));
   cudaMalloc(&d_dW_o, D * D * sizeof(float));
   cudaMalloc(&d_db_o, D * sizeof(float));
-  cudaMalloc(&d_qkv, B * T * 3 * D * sizeof(float));
-  cudaMalloc(&d_Q, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_K, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_V, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_scores, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_probs, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_ctx, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_merged, B * T * D * sizeof(float));
 
   cudaMemcpy(d_X, h_X.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(d_dO, h_dO.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
@@ -242,16 +233,6 @@ TEST(AttentionBackwardTest, TinyBackwardMatchesCPU) {
   params.W_o = {d_W_o, {D, D}, {D, 1}};
   params.b_o = {d_b_o, {D}, {1}};
 
-  AttentionForwardState state;
-  state.qkv = {d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
-  state.Q = {d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.K = {d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.V = {d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.scores = {d_scores, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.probs = {d_probs, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.context = {d_ctx, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.context_merged = {d_merged, {B, T, D}, {T * D, D, 1}};
-
   AttentionGrads grads;
   grads.dW_qkv = {d_dW_qkv, {3 * D, D}, {D, 1}};
   grads.db_qkv = {d_db_qkv, {3 * D}, {1}};
@@ -263,11 +244,13 @@ TEST(AttentionBackwardTest, TinyBackwardMatchesCPU) {
   Tensor3D<const float> dO{d_dO, {B, T, D}, {T * D, D, 1}};
   Tensor3D<float> dX{d_dX, {B, T, D}, {T * D, D, 1}};
 
-  ASSERT_TRUE(attention_forward(X, cfg, params, out, state, stream).ok());
+  AttentionWorkspace workspace;
+  ASSERT_TRUE(attention_forward(X, cfg, params, out, workspace, stream).ok());
   DeviceScratchArena scratch;
   ASSERT_TRUE(scratch.reserve_bytes(1 << 20).ok());
   ASSERT_TRUE(
-      attention_backward(dO, X, cfg, params, state, dX, grads, scratch, stream)
+      attention_backward(dO, X, cfg, params, workspace.state(), dX, grads,
+                         scratch, stream)
           .ok());
   ASSERT_TRUE(stream.synchronize().ok());
 
@@ -296,8 +279,6 @@ TEST(AttentionBackwardTest, TinyBackwardMatchesCPU) {
   cudaFree(d_X); cudaFree(d_dO); cudaFree(d_out); cudaFree(d_dX);
   cudaFree(d_W_qkv); cudaFree(d_b_qkv); cudaFree(d_W_o); cudaFree(d_b_o);
   cudaFree(d_dW_qkv); cudaFree(d_db_qkv); cudaFree(d_dW_o); cudaFree(d_db_o);
-  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
-  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
 // CPU-only: finite-difference gradient check on attention forward.

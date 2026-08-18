@@ -51,28 +51,12 @@ TEST(AttentionIntegrationTest, ForwardProducesCausalProbabilityRows) {
   float* d_b_qkv = nullptr;
   float* d_W_o = nullptr;
   float* d_b_o = nullptr;
-  float* d_qkv = nullptr;
-  float* d_Q = nullptr;
-  float* d_K = nullptr;
-  float* d_V = nullptr;
-  float* d_scores = nullptr;
-  float* d_probs = nullptr;
-  float* d_ctx = nullptr;
-  float* d_merged = nullptr;
   cudaMalloc(&d_X, B * T * D * sizeof(float));
   cudaMalloc(&d_out, B * T * D * sizeof(float));
   cudaMalloc(&d_W_qkv, 3 * D * D * sizeof(float));
   cudaMalloc(&d_b_qkv, 3 * D * sizeof(float));
   cudaMalloc(&d_W_o, D * D * sizeof(float));
   cudaMalloc(&d_b_o, D * sizeof(float));
-  cudaMalloc(&d_qkv, B * T * 3 * D * sizeof(float));
-  cudaMalloc(&d_Q, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_K, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_V, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_scores, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_probs, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_ctx, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_merged, B * T * D * sizeof(float));
 
   cudaMemcpy(d_X, h_X.data(), h_X.size() * sizeof(float),
              cudaMemcpyHostToDevice);
@@ -98,23 +82,10 @@ TEST(AttentionIntegrationTest, ForwardProducesCausalProbabilityRows) {
   params.W_o = Tensor2D<float>{d_W_o, {D, D}, {D, 1}};
   params.b_o = Tensor1D<float>{d_b_o, {D}, {1}};
 
-  AttentionForwardState state;
-  state.qkv = Tensor3D<float>{d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
-  state.Q = Tensor4D<float>{d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.K = Tensor4D<float>{d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.V = Tensor4D<float>{d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.scores = Tensor4D<float>{d_scores, {B, H, T, T},
-                                 {H * T * T, T * T, T, 1}};
-  state.probs = Tensor4D<float>{d_probs, {B, H, T, T},
-                                {H * T * T, T * T, T, 1}};
-  state.context = Tensor4D<float>{d_ctx, {B, H, T, Dh},
-                                  {H * T * Dh, T * Dh, Dh, 1}};
-  state.context_merged =
-      Tensor3D<float>{d_merged, {B, T, D}, {T * D, D, 1}};
-
   Tensor3D<const float> X{d_X, {B, T, D}, {T * D, D, 1}};
   Tensor3D<float> output{d_out, {B, T, D}, {T * D, D, 1}};
-  auto status = attention_forward(X, config, params, output, state, stream);
+  AttentionWorkspace workspace;
+  auto status = attention_forward(X, config, params, output, workspace, stream);
   ASSERT_TRUE(status.ok()) << status.message();
   ASSERT_TRUE(stream.synchronize().ok());
 
@@ -122,8 +93,8 @@ TEST(AttentionIntegrationTest, ForwardProducesCausalProbabilityRows) {
   std::vector<float> h_probs(B * H * T * T);
   cudaMemcpy(h_output.data(), d_out, h_output.size() * sizeof(float),
              cudaMemcpyDeviceToHost);
-  cudaMemcpy(h_probs.data(), d_probs, h_probs.size() * sizeof(float),
-             cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_probs.data(), workspace.state().probs.data,
+             h_probs.size() * sizeof(float), cudaMemcpyDeviceToHost);
 
   for (float value : h_output) {
     EXPECT_TRUE(std::isfinite(value));
@@ -149,6 +120,5 @@ TEST(AttentionIntegrationTest, ForwardProducesCausalProbabilityRows) {
     }
   }
 
-  FreeAll({d_X, d_out, d_W_qkv, d_b_qkv, d_W_o, d_b_o, d_qkv, d_Q, d_K,
-           d_V, d_scores, d_probs, d_ctx, d_merged});
+  FreeAll({d_X, d_out, d_W_qkv, d_b_qkv, d_W_o, d_b_o});
 }

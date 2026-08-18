@@ -121,7 +121,9 @@ Status gemm_f32(Tensor2D<float> A, Tensor2D<float> B, Tensor2D<float> C,
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
   Result<GemmProblem> problem_result = make_gemm_problem(A, B, C);
-  if (!problem_result.ok()) return problem_result.status();
+  if (!problem_result.ok()) {
+    return problem_result.status();
+  }
   GemmProblem problem = problem_result.value();
   if (problem.c.orientation != MatrixOrientation::kRowMajor) {
     return Status(StatusCode::kInvalidArgument,
@@ -190,7 +192,9 @@ Status gemm_bf16(Tensor2D<__nv_bfloat16> A, Tensor2D<__nv_bfloat16> B,
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
   Result<GemmProblem> problem_result = make_gemm_problem(A, B, C);
-  if (!problem_result.ok()) return problem_result.status();
+  if (!problem_result.ok()) {
+    return problem_result.status();
+  }
   GemmProblem problem = problem_result.value();
   if (problem.c.orientation != MatrixOrientation::kRowMajor) {
     return Status(StatusCode::kInvalidArgument,
@@ -250,7 +254,9 @@ Status batched_gemm_f32(Tensor3D<float> A, Tensor3D<float> B,
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
   Result<GemmProblem> problem_result = make_batched_gemm_problem(A, B, C);
-  if (!problem_result.ok()) return problem_result.status();
+  if (!problem_result.ok()) {
+    return problem_result.status();
+  }
   GemmProblem problem = problem_result.value();
   if (problem.c.orientation != MatrixOrientation::kRowMajor) {
     return Status(StatusCode::kInvalidArgument,
@@ -319,7 +325,9 @@ Status batched_gemm_bf16(Tensor3D<__nv_bfloat16> A,
     return Status(StatusCode::kInvalidArgument, "Unknown GEMM backend");
   }
   Result<GemmProblem> problem_result = make_batched_gemm_problem(A, B, C);
-  if (!problem_result.ok()) return problem_result.status();
+  if (!problem_result.ok()) {
+    return problem_result.status();
+  }
   GemmProblem problem = problem_result.value();
   if (problem.c.orientation != MatrixOrientation::kRowMajor) {
     return Status(StatusCode::kInvalidArgument,

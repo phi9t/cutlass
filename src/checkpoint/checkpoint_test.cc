@@ -48,15 +48,23 @@ TEST_F(CheckpointTest, SaveLoadRoundTrip) {
   meta.dataset_cursor = 4096;
   meta.config_json = "{\"learning_rate\":0.001,\"run\":\"checkpoint_test\"}";
 
-  ASSERT_TRUE(save_checkpoint(dir_, d_params, d_m, d_v, n, meta).ok());
+  TrainingSnapshot snapshot;
+  snapshot.params = d_params;
+  snapshot.opt_m = d_m;
+  snapshot.opt_v = d_v;
+  snapshot.param_count = n;
+  snapshot.metadata = meta;
+  ASSERT_TRUE(save_training_snapshot(dir_, snapshot).ok());
 
   // Zero device buffers.
   cudaMemset(d_params, 0, n * sizeof(float));
   cudaMemset(d_m, 0, n * sizeof(float));
   cudaMemset(d_v, 0, n * sizeof(float));
 
-  CheckpointMetadata loaded_meta;
-  ASSERT_TRUE(load_checkpoint(dir_, d_params, d_m, d_v, n, loaded_meta).ok());
+  snapshot.metadata = CheckpointMetadata{};
+  snapshot.metadata.param_count = n;
+  ASSERT_TRUE(load_training_snapshot(dir_, snapshot).ok());
+  CheckpointMetadata loaded_meta = snapshot.metadata;
 
   EXPECT_EQ(loaded_meta.step, meta.step);
   EXPECT_EQ(loaded_meta.param_count, meta.param_count);
@@ -167,8 +175,13 @@ TEST_F(CheckpointTest, ParamCountMismatchDoesNotOverwriteBuffers) {
   meta.param_count = saved_n;
   meta.dataset_cursor = 11;
   meta.config_json = "{\"run\":\"mismatch\"}";
-  ASSERT_TRUE(save_checkpoint(dir_, d_saved_params, d_saved_m, d_saved_v, saved_n,
-                              meta).ok());
+  TrainingSnapshot saved_snapshot;
+  saved_snapshot.params = d_saved_params;
+  saved_snapshot.opt_m = d_saved_m;
+  saved_snapshot.opt_v = d_saved_v;
+  saved_snapshot.param_count = saved_n;
+  saved_snapshot.metadata = meta;
+  ASSERT_TRUE(save_training_snapshot(dir_, saved_snapshot).ok());
 
   float *d_params, *d_m, *d_v;
   cudaMalloc(&d_params, target_n * sizeof(float));
@@ -179,8 +192,13 @@ TEST_F(CheckpointTest, ParamCountMismatchDoesNotOverwriteBuffers) {
   cudaMemcpy(d_m, h_target.data(), target_n * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(d_v, h_target.data(), target_n * sizeof(float), cudaMemcpyHostToDevice);
 
-  CheckpointMetadata loaded_meta;
-  Status status = load_checkpoint(dir_, d_params, d_m, d_v, target_n, loaded_meta);
+  TrainingSnapshot target_snapshot;
+  target_snapshot.params = d_params;
+  target_snapshot.opt_m = d_m;
+  target_snapshot.opt_v = d_v;
+  target_snapshot.param_count = target_n;
+  target_snapshot.metadata.param_count = target_n;
+  Status status = load_training_snapshot(dir_, target_snapshot);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), StatusCode::kInvalidArgument);
 
@@ -225,8 +243,13 @@ TEST_F(CheckpointTest, ShortBufferFileFailsLoad) {
   cudaMalloc(&d_m, n * sizeof(float));
   cudaMalloc(&d_v, n * sizeof(float));
 
-  CheckpointMetadata loaded_meta;
-  Status status = load_checkpoint(dir_, d_params, d_m, d_v, n, loaded_meta);
+  TrainingSnapshot snapshot;
+  snapshot.params = d_params;
+  snapshot.opt_m = d_m;
+  snapshot.opt_v = d_v;
+  snapshot.param_count = n;
+  snapshot.metadata.param_count = n;
+  Status status = load_training_snapshot(dir_, snapshot);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), StatusCode::kInvalidArgument);
 

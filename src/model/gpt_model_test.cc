@@ -384,7 +384,7 @@ TEST_F(GPTModelGPUTest, BackwardZeroLayerComputesGradients) {
 }
 
 TEST_F(GPTModelGPUTest, BackwardOneLayerProducesFiniteGradients) {
-  const int64_t B = 1, T = 2, D = 4, H = 2, Dh = 2, vocab = 8, mlp = 8;
+  const int64_t B = 1, T = 2, D = 4, H = 2, vocab = 8, mlp = 8;
 
   GPTConfig config;
   config.vocab_size = vocab;
@@ -448,15 +448,6 @@ TEST_F(GPTModelGPUTest, BackwardOneLayerProducesFiniteGradients) {
   float* d_fc1_out = alloc(B * T * mlp * sizeof(float));
   float* d_gelu_out = alloc(B * T * mlp * sizeof(float));
   float* d_fc2_out = alloc(B * T * D * sizeof(float));
-  float* d_qkv = alloc(B * T * 3 * D * sizeof(float));
-  float* d_Q = alloc(B * H * T * Dh * sizeof(float));
-  float* d_K = alloc(B * H * T * Dh * sizeof(float));
-  float* d_V = alloc(B * H * T * Dh * sizeof(float));
-  float* d_scores = alloc(B * H * T * T * sizeof(float));
-  float* d_probs = alloc(B * H * T * T * sizeof(float));
-  float* d_ctx = alloc(B * H * T * Dh * sizeof(float));
-  float* d_merged = alloc(B * T * D * sizeof(float));
-
   GPTForwardState state;
   state.embed_out = {d_embed, {B, T, D}, {T * D, D, 1}};
   state.block_inputs.resize(1);
@@ -478,14 +469,8 @@ TEST_F(GPTModelGPUTest, BackwardOneLayerProducesFiniteGradients) {
   block.fc1_out = {d_fc1_out, {B, T, mlp}, {T * mlp, mlp, 1}};
   block.gelu_out = {d_gelu_out, {B, T, mlp}, {T * mlp, mlp, 1}};
   block.fc2_out = {d_fc2_out, {B, T, D}, {T * D, D, 1}};
-  block.attn_state.qkv = {d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
-  block.attn_state.Q = {d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  block.attn_state.K = {d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  block.attn_state.V = {d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  block.attn_state.scores = {d_scores, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  block.attn_state.probs = {d_probs, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  block.attn_state.context = {d_ctx, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  block.attn_state.context_merged = {d_merged, {B, T, D}, {T * D, D, 1}};
+  attention::AttentionWorkspace attn_workspace;
+  block.attn_workspace = &attn_workspace;
 
   Tensor2D<const int32_t> input_ids{d_ids, {B, T}, {T, 1}};
   Tensor2D<const float> d_logits_view{d_dlogits, {B * T, vocab}, {vocab, 1}};
@@ -516,8 +501,6 @@ TEST_F(GPTModelGPUTest, BackwardOneLayerProducesFiniteGradients) {
   cudaFree(d_ln2_mean); cudaFree(d_ln2_inv);
   cudaFree(d_attn_out); cudaFree(d_fc1_out);
   cudaFree(d_gelu_out); cudaFree(d_fc2_out);
-  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
-  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
 // --- CPU-only: end-to-end tiny model verification ---

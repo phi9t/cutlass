@@ -44,9 +44,14 @@ Status block_forward(Tensor3D<const float> x,
 
     Tensor3D<const float> ln1_in{state.ln1_out.data,
                                   {B, T, D}, {T * D, D, 1}};
+    if (state.attn_workspace == nullptr) {
+      return Status(StatusCode::kInvalidArgument,
+                    "block_forward: missing attention workspace");
+    }
     GPT_RETURN_IF_ERROR(attention::attention_forward(
         ln1_in, attn_cfg, params.attn, state.attn_out,
-        state.attn_state, stream));
+        *state.attn_workspace, stream));
+    state.attn_state = state.attn_workspace->state();
   }
 
   // Residual add: output = x + attn_out.

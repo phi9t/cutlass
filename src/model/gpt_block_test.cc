@@ -117,7 +117,7 @@ class GPTBlockGPUTest : public ::testing::Test {
 
 TEST_F(GPTBlockGPUTest, ForwardCompiles) {
   // Tiny config: B=1, T=2, D=4, H=2, mlp_hidden=8.
-  const int64_t B = 1, T = 2, D = 4, H = 2, Dh = 2;
+  const int64_t B = 1, T = 2, D = 4, H = 2;
   const int64_t mlp_hidden = 8;
 
   GPTConfig config;
@@ -196,14 +196,6 @@ TEST_F(GPTBlockGPUTest, ForwardCompiles) {
   float* d_fc2_out = alloc(B * T * D * sizeof(float));
 
   // Attention state workspace.
-  float* d_qkv = alloc(B * T * 3 * D * sizeof(float));
-  float* d_Q = alloc(B * H * T * Dh * sizeof(float));
-  float* d_K = alloc(B * H * T * Dh * sizeof(float));
-  float* d_V = alloc(B * H * T * Dh * sizeof(float));
-  float* d_scores = alloc(B * H * T * T * sizeof(float));
-  float* d_probs = alloc(B * H * T * T * sizeof(float));
-  float* d_ctx = alloc(B * H * T * Dh * sizeof(float));
-  float* d_merged = alloc(B * T * D * sizeof(float));
 
   // Copy data to device.
   cudaMemcpy(d_x, h_x.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
@@ -254,15 +246,8 @@ TEST_F(GPTBlockGPUTest, ForwardCompiles) {
   state.gelu_out = {d_gelu_out, {B, T, mlp_hidden}, {T * mlp_hidden, mlp_hidden, 1}};
   state.fc2_out = {d_fc2_out, {B, T, D}, {T * D, D, 1}};
 
-  // Attention forward state.
-  state.attn_state.qkv = {d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
-  state.attn_state.Q = {d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.K = {d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.V = {d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.scores = {d_scores, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.attn_state.probs = {d_probs, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.attn_state.context = {d_ctx, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.context_merged = {d_merged, {B, T, D}, {T * D, D, 1}};
+  attention::AttentionWorkspace attn_workspace;
+  state.attn_workspace = &attn_workspace;
 
   // Call block_forward.
   Tensor3D<const float> x{d_x, {B, T, D}, {T * D, D, 1}};
@@ -322,12 +307,10 @@ TEST_F(GPTBlockGPUTest, ForwardCompiles) {
   cudaFree(d_ln2_mean); cudaFree(d_ln2_inv);
   cudaFree(d_attn_out); cudaFree(d_fc1_out);
   cudaFree(d_gelu_out); cudaFree(d_fc2_out);
-  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
-  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
 TEST_F(GPTBlockGPUTest, BackwardDXMatchesFiniteDifference) {
-  const int64_t B = 1, T = 2, D = 4, H = 2, Dh = 2;
+  const int64_t B = 1, T = 2, D = 4, H = 2;
   const int64_t mlp_hidden = 8;
 
   GPTConfig config;
@@ -411,14 +394,6 @@ TEST_F(GPTBlockGPUTest, BackwardDXMatchesFiniteDifference) {
   float* d_fc1_out = alloc(B * T * mlp_hidden * sizeof(float));
   float* d_gelu_out = alloc(B * T * mlp_hidden * sizeof(float));
   float* d_fc2_out = alloc(B * T * D * sizeof(float));
-  float* d_qkv = alloc(B * T * 3 * D * sizeof(float));
-  float* d_Q = alloc(B * H * T * Dh * sizeof(float));
-  float* d_K = alloc(B * H * T * Dh * sizeof(float));
-  float* d_V = alloc(B * H * T * Dh * sizeof(float));
-  float* d_scores = alloc(B * H * T * T * sizeof(float));
-  float* d_probs = alloc(B * H * T * T * sizeof(float));
-  float* d_ctx = alloc(B * H * T * Dh * sizeof(float));
-  float* d_merged = alloc(B * T * D * sizeof(float));
 
   cudaMemcpy(d_x, h_x.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(d_dout, h_dout.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
@@ -469,14 +444,8 @@ TEST_F(GPTBlockGPUTest, BackwardDXMatchesFiniteDifference) {
   state.fc1_out = {d_fc1_out, {B, T, mlp_hidden}, {T * mlp_hidden, mlp_hidden, 1}};
   state.gelu_out = {d_gelu_out, {B, T, mlp_hidden}, {T * mlp_hidden, mlp_hidden, 1}};
   state.fc2_out = {d_fc2_out, {B, T, D}, {T * D, D, 1}};
-  state.attn_state.qkv = {d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
-  state.attn_state.Q = {d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.K = {d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.V = {d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.scores = {d_scores, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.attn_state.probs = {d_probs, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.attn_state.context = {d_ctx, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.attn_state.context_merged = {d_merged, {B, T, D}, {T * D, D, 1}};
+  attention::AttentionWorkspace attn_workspace;
+  state.attn_workspace = &attn_workspace;
 
   GPTGrads::LayerGrads grads{};
   grads.d_ln1_gamma = {d_dg1, {D}, {1}};
@@ -520,8 +489,6 @@ TEST_F(GPTBlockGPUTest, BackwardDXMatchesFiniteDifference) {
   cudaFree(d_ln2_mean); cudaFree(d_ln2_inv);
   cudaFree(d_attn_out); cudaFree(d_fc1_out);
   cudaFree(d_gelu_out); cudaFree(d_fc2_out);
-  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
-  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }
 
 // --- CPU-only: MLP sub-block structure verification ---

@@ -121,14 +121,24 @@ TEST(GPTCheckpointRoundtripTest, LoadProducesIdenticalForwardLogits) {
   meta.dataset_cursor = 96;
   meta.config_json = "{\"test\":\"gpt_checkpoint_roundtrip\"}";
 
-  auto status = checkpoint::save_checkpoint(
-      dir, d_params, d_m, d_v, param_count, meta);
+  checkpoint::TrainingSnapshot snapshot;
+  snapshot.params = d_params;
+  snapshot.opt_m = d_m;
+  snapshot.opt_v = d_v;
+  snapshot.param_count = param_count;
+  snapshot.metadata = meta;
+  auto status = checkpoint::save_training_snapshot(dir, snapshot);
   ASSERT_TRUE(status.ok()) << status.message();
 
-  checkpoint::CheckpointMetadata loaded_meta;
-  status = checkpoint::load_checkpoint(
-      dir, d_loaded_params, d_loaded_m, d_loaded_v, param_count, loaded_meta);
+  checkpoint::TrainingSnapshot loaded_snapshot;
+  loaded_snapshot.params = d_loaded_params;
+  loaded_snapshot.opt_m = d_loaded_m;
+  loaded_snapshot.opt_v = d_loaded_v;
+  loaded_snapshot.param_count = param_count;
+  loaded_snapshot.metadata.param_count = param_count;
+  status = checkpoint::load_training_snapshot(dir, loaded_snapshot);
   ASSERT_TRUE(status.ok()) << status.message();
+  checkpoint::CheckpointMetadata loaded_meta = loaded_snapshot.metadata;
   EXPECT_EQ(loaded_meta.step, meta.step);
   EXPECT_EQ(loaded_meta.param_count, meta.param_count);
   EXPECT_EQ(loaded_meta.dataset_cursor, meta.dataset_cursor);

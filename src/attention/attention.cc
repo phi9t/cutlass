@@ -88,7 +88,10 @@ Status AttentionWorkspace::ensure(const AttentionConfig& config, int64_t B,
     return Status(StatusCode::kInvalidArgument,
                   "AttentionWorkspace::ensure: invalid attention shape");
   }
-  if (capacity_B_ == B && capacity_T_ == T) {
+  if (capacity_B_ == B && capacity_T_ == T &&
+      capacity_d_model_ == config.d_model &&
+      capacity_n_heads_ == config.n_heads &&
+      capacity_head_dim_ == config.head_dim) {
     return Status::Ok();
   }
 
@@ -135,6 +138,9 @@ Status AttentionWorkspace::ensure(const AttentionConfig& config, int64_t B,
   state_.context_merged = Make3D(merged.value(), B, T, D);
   capacity_B_ = B;
   capacity_T_ = T;
+  capacity_d_model_ = config.d_model;
+  capacity_n_heads_ = config.n_heads;
+  capacity_head_dim_ = config.head_dim;
   return Status::Ok();
 }
 
@@ -146,6 +152,9 @@ void AttentionWorkspace::release() {
   state_ = AttentionForwardState{};
   capacity_B_ = 0;
   capacity_T_ = 0;
+  capacity_d_model_ = 0;
+  capacity_n_heads_ = 0;
+  capacity_head_dim_ = 0;
 }
 
 AttentionWorkspace::~AttentionWorkspace() { release(); }
@@ -154,10 +163,16 @@ AttentionWorkspace::AttentionWorkspace(AttentionWorkspace&& other) noexcept
     : state_(other.state_),
       buffers_(std::move(other.buffers_)),
       capacity_B_(other.capacity_B_),
-      capacity_T_(other.capacity_T_) {
+      capacity_T_(other.capacity_T_),
+      capacity_d_model_(other.capacity_d_model_),
+      capacity_n_heads_(other.capacity_n_heads_),
+      capacity_head_dim_(other.capacity_head_dim_) {
   other.state_ = AttentionForwardState{};
   other.capacity_B_ = 0;
   other.capacity_T_ = 0;
+  other.capacity_d_model_ = 0;
+  other.capacity_n_heads_ = 0;
+  other.capacity_head_dim_ = 0;
 }
 
 AttentionWorkspace& AttentionWorkspace::operator=(
@@ -168,19 +183,25 @@ AttentionWorkspace& AttentionWorkspace::operator=(
     buffers_ = std::move(other.buffers_);
     capacity_B_ = other.capacity_B_;
     capacity_T_ = other.capacity_T_;
+    capacity_d_model_ = other.capacity_d_model_;
+    capacity_n_heads_ = other.capacity_n_heads_;
+    capacity_head_dim_ = other.capacity_head_dim_;
     other.state_ = AttentionForwardState{};
     other.capacity_B_ = 0;
     other.capacity_T_ = 0;
+    other.capacity_d_model_ = 0;
+    other.capacity_n_heads_ = 0;
+    other.capacity_head_dim_ = 0;
   }
   return *this;
 }
 
-Status attention_forward(Tensor3D<const float> X,
-                         const AttentionConfig& config,
-                         const AttentionParams& params,
-                         Tensor3D<float> output,
-                         AttentionForwardState& state,
-                         const CudaStream& stream) {
+Status attention_forward_with_state(Tensor3D<const float> X,
+                                    const AttentionConfig& config,
+                                    const AttentionParams& params,
+                                    Tensor3D<float> output,
+                                    AttentionForwardState& state,
+                                    const CudaStream& stream) {
   int64_t B = X.shape[0];
   int64_t T = X.shape[1];
   int64_t D = X.shape[2];
@@ -303,7 +324,8 @@ Status attention_forward(Tensor3D<const float> X,
                          AttentionWorkspace& workspace,
                          const CudaStream& stream) {
   GPT_RETURN_IF_ERROR(workspace.ensure(config, X.shape[0], X.shape[1]));
-  return attention_forward(X, config, params, output, workspace.state(), stream);
+  return attention_forward_with_state(X, config, params, output,
+                                      workspace.state(), stream);
 }
 
 Status attention_backward(Tensor3D<const float> dO,

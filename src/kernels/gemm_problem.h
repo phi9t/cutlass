@@ -55,11 +55,17 @@ Result<GemmProblem> make_gemm_problem(Tensor2D<T> A, Tensor2D<T> B,
     return Status(StatusCode::kInvalidArgument, "GEMM output shape mismatch");
   }
   Result<MatrixLayout> a = classify_matrix_layout(A);
-  if (!a.ok()) return a.status();
+  if (!a.ok()) {
+    return a.status();
+  }
   Result<MatrixLayout> b = classify_matrix_layout(B);
-  if (!b.ok()) return b.status();
+  if (!b.ok()) {
+    return b.status();
+  }
   Result<MatrixLayout> c = classify_matrix_layout(C);
-  if (!c.ok()) return c.status();
+  if (!c.ok()) {
+    return c.status();
+  }
 
   GemmProblem problem;
   problem.m = A.shape[0];
@@ -85,7 +91,9 @@ Result<GemmProblem> make_batched_gemm_problem(Tensor3D<T> A, Tensor3D<T> B,
   Tensor2D<T> c{C.data, {C.shape[1], C.shape[2]},
                 {C.stride[1], C.stride[2]}};
   Result<GemmProblem> problem = make_gemm_problem(a, b, c);
-  if (!problem.ok()) return problem.status();
+  if (!problem.ok()) {
+    return problem.status();
+  }
   problem.value().batch_count = A.shape[0];
   problem.value().batch_stride_a = A.stride[0];
   problem.value().batch_stride_b = B.stride[0];

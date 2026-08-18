@@ -34,6 +34,7 @@ struct BlockForwardState {
 
   // Attention intermediates.
   attention::AttentionForwardState attn_state;
+  attention::AttentionWorkspace* attn_workspace = nullptr;
   Tensor3D<float> attn_out;      // [B, T, D]
 
   // MLP intermediates.

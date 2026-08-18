@@ -51,28 +51,12 @@ TEST(AttentionPerfTest, SmokeTiming) {
   float* d_b_qkv = nullptr;
   float* d_W_o = nullptr;
   float* d_b_o = nullptr;
-  float* d_qkv = nullptr;
-  float* d_Q = nullptr;
-  float* d_K = nullptr;
-  float* d_V = nullptr;
-  float* d_scores = nullptr;
-  float* d_probs = nullptr;
-  float* d_ctx = nullptr;
-  float* d_merged = nullptr;
   cudaMalloc(&d_X, h_X.size() * sizeof(float));
   cudaMalloc(&d_out, B * T * D * sizeof(float));
   cudaMalloc(&d_W_qkv, h_W_qkv.size() * sizeof(float));
   cudaMalloc(&d_b_qkv, h_b_qkv.size() * sizeof(float));
   cudaMalloc(&d_W_o, h_W_o.size() * sizeof(float));
   cudaMalloc(&d_b_o, h_b_o.size() * sizeof(float));
-  cudaMalloc(&d_qkv, B * T * 3 * D * sizeof(float));
-  cudaMalloc(&d_Q, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_K, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_V, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_scores, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_probs, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_ctx, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_merged, B * T * D * sizeof(float));
   cudaMemcpy(d_X, h_X.data(), h_X.size() * sizeof(float),
              cudaMemcpyHostToDevice);
   cudaMemcpy(d_W_qkv, h_W_qkv.data(), h_W_qkv.size() * sizeof(float),
@@ -91,22 +75,11 @@ TEST(AttentionPerfTest, SmokeTiming) {
   params.W_o = Tensor2D<float>{d_W_o, {D, D}, {D, 1}};
   params.b_o = Tensor1D<float>{d_b_o, {D}, {1}};
 
-  AttentionForwardState state;
-  state.qkv = Tensor3D<float>{d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
-  state.Q = Tensor4D<float>{d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.K = Tensor4D<float>{d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.V = Tensor4D<float>{d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.scores = Tensor4D<float>{d_scores, {B, H, T, T},
-                                 {H * T * T, T * T, T, 1}};
-  state.probs = Tensor4D<float>{d_probs, {B, H, T, T},
-                                {H * T * T, T * T, T, 1}};
-  state.context = Tensor4D<float>{d_ctx, {B, H, T, Dh},
-                                  {H * T * Dh, T * Dh, Dh, 1}};
-  state.context_merged = Tensor3D<float>{d_merged, {B, T, D}, {T * D, D, 1}};
   Tensor3D<const float> X{d_X, {B, T, D}, {T * D, D, 1}};
   Tensor3D<float> out{d_out, {B, T, D}, {T * D, D, 1}};
 
-  ASSERT_TRUE(attention_forward(X, config, params, out, state, stream).ok());
+  AttentionWorkspace workspace;
+  ASSERT_TRUE(attention_forward(X, config, params, out, workspace, stream).ok());
   ASSERT_TRUE(stream.synchronize().ok());
 
   auto start_result = CudaEvent::Create();
@@ -117,7 +90,7 @@ TEST(AttentionPerfTest, SmokeTiming) {
   CudaEvent stop = stop_result.take();
   ASSERT_TRUE(start.record(stream).ok());
   for (int i = 0; i < iters; ++i) {
-    ASSERT_TRUE(attention_forward(X, config, params, out, state, stream).ok());
+    ASSERT_TRUE(attention_forward(X, config, params, out, workspace, stream).ok());
   }
   ASSERT_TRUE(stop.record(stream).ok());
   ASSERT_TRUE(stop.synchronize().ok());
@@ -133,12 +106,4 @@ TEST(AttentionPerfTest, SmokeTiming) {
   cudaFree(d_b_qkv);
   cudaFree(d_W_o);
   cudaFree(d_b_o);
-  cudaFree(d_qkv);
-  cudaFree(d_Q);
-  cudaFree(d_K);
-  cudaFree(d_V);
-  cudaFree(d_scores);
-  cudaFree(d_probs);
-  cudaFree(d_ctx);
-  cudaFree(d_merged);
 }

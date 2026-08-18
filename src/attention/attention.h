@@ -103,6 +103,9 @@ class AttentionWorkspace {
   std::vector<float*> buffers_;
   int64_t capacity_B_ = 0;
   int64_t capacity_T_ = 0;
+  int64_t capacity_d_model_ = 0;
+  int64_t capacity_n_heads_ = 0;
+  int64_t capacity_head_dim_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -110,13 +113,6 @@ class AttentionWorkspace {
 //   X:      [B, T, D]
 //   output: [B, T, D]
 // ---------------------------------------------------------------------------
-
-Status attention_forward(Tensor3D<const float> X,
-                         const AttentionConfig& config,
-                         const AttentionParams& params,
-                         Tensor3D<float> output,
-                         AttentionForwardState& state,
-                         const CudaStream& stream);
 
 Status attention_forward(Tensor3D<const float> X,
                          const AttentionConfig& config,

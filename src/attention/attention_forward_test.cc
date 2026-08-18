@@ -204,7 +204,6 @@ TEST(AttentionGPUCompileTest, ForwardCallCompiles) {
   // Allocate device memory.
   float *d_X, *d_out;
   float *d_W_qkv, *d_b_qkv, *d_W_o, *d_b_o;
-  float *d_qkv, *d_Q, *d_K, *d_V, *d_scores, *d_probs, *d_ctx, *d_merged;
 
   cudaMalloc(&d_X, B * T * D * sizeof(float));
   cudaMalloc(&d_out, B * T * D * sizeof(float));
@@ -212,14 +211,6 @@ TEST(AttentionGPUCompileTest, ForwardCallCompiles) {
   cudaMalloc(&d_b_qkv, 3 * D * sizeof(float));
   cudaMalloc(&d_W_o, D * D * sizeof(float));
   cudaMalloc(&d_b_o, D * sizeof(float));
-  cudaMalloc(&d_qkv, B * T * 3 * D * sizeof(float));
-  cudaMalloc(&d_Q, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_K, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_V, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_scores, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_probs, B * H * T * T * sizeof(float));
-  cudaMalloc(&d_ctx, B * H * T * Dh * sizeof(float));
-  cudaMalloc(&d_merged, B * T * D * sizeof(float));
 
   // Copy data to device.
   cudaMemcpy(d_X, h_X.data(), B * T * D * sizeof(float), cudaMemcpyHostToDevice);
@@ -243,23 +234,13 @@ TEST(AttentionGPUCompileTest, ForwardCallCompiles) {
   params.W_o = {d_W_o, {D, D}, {D, 1}};
   params.b_o = {d_b_o, {D}, {1}};
 
-  // Build forward state.
-  AttentionForwardState state;
-  state.qkv = {d_qkv, {B, T, 3 * D}, {T * 3 * D, 3 * D, 1}};
-  state.Q = {d_Q, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.K = {d_K, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.V = {d_V, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.scores = {d_scores, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.probs = {d_probs, {B, H, T, T}, {H * T * T, T * T, T, 1}};
-  state.context = {d_ctx, {B, H, T, Dh}, {H * T * Dh, T * Dh, Dh, 1}};
-  state.context_merged = {d_merged, {B, T, D}, {T * D, D, 1}};
-
   // Build input/output tensors.
   Tensor3D<const float> X{d_X, {B, T, D}, {T * D, D, 1}};
   Tensor3D<float> output{d_out, {B, T, D}, {T * D, D, 1}};
 
   // Call forward — this tests that CUDA code compiles and links.
-  auto status = attention_forward(X, cfg, params, output, state, stream);
+  AttentionWorkspace workspace;
+  auto status = attention_forward(X, cfg, params, output, workspace, stream);
   ASSERT_TRUE(status.ok()) << status.message();
   stream.synchronize();
 
@@ -278,6 +259,4 @@ TEST(AttentionGPUCompileTest, ForwardCallCompiles) {
   // Cleanup.
   cudaFree(d_X); cudaFree(d_out);
   cudaFree(d_W_qkv); cudaFree(d_b_qkv); cudaFree(d_W_o); cudaFree(d_b_o);
-  cudaFree(d_qkv); cudaFree(d_Q); cudaFree(d_K); cudaFree(d_V);
-  cudaFree(d_scores); cudaFree(d_probs); cudaFree(d_ctx); cudaFree(d_merged);
 }

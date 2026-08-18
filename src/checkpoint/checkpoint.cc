@@ -317,37 +317,5 @@ Status load_training_snapshot(std::string const& dir,
   return Status::Ok();
 }
 
-Status save_checkpoint(std::string const& dir,
-                       float const* params,
-                       float const* opt_m,
-                       float const* opt_v,
-                       int64_t param_count,
-                       CheckpointMetadata const& meta) {
-  TrainingSnapshot snapshot;
-  snapshot.params = const_cast<float*>(params);
-  snapshot.opt_m = const_cast<float*>(opt_m);
-  snapshot.opt_v = const_cast<float*>(opt_v);
-  snapshot.param_count = param_count;
-  snapshot.metadata = meta;
-  return save_training_snapshot(dir, snapshot);
-}
-
-Status load_checkpoint(std::string const& dir,
-                       float* params,
-                       float* opt_m,
-                       float* opt_v,
-                       int64_t param_count,
-                       CheckpointMetadata& meta) {
-  TrainingSnapshot snapshot;
-  snapshot.params = params;
-  snapshot.opt_m = opt_m;
-  snapshot.opt_v = opt_v;
-  snapshot.param_count = param_count;
-  snapshot.metadata.param_count = param_count;
-  GPT_RETURN_IF_ERROR(load_training_snapshot(dir, snapshot));
-  meta = snapshot.metadata;
-  return Status::Ok();
-}
-
 }  // namespace checkpoint
 }  // namespace gpt
