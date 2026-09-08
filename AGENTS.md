@@ -51,3 +51,12 @@ cmake .. -DCUTLASS_NVCC_ARCHS=90a -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_UNITY_BUI
 ## Configuration Tips
 - Use `-DCUTLASS_NVCC_ARCHS` to match your GPU (e.g., `80`, `90a`, `100a`).
 - You can filter kernel builds with `-DCUTLASS_LIBRARY_KERNELS=...` to reduce compile times.
+
+<!-- ultron-agentic-workflow:start -->
+## Agentic engineering workflow
+
+**Mandatory:** Read and follow `CONSTITUTION.md` before acting. Before planning,
+building, fixing, or changing code, read and follow
+`docs/agents/agentic-engineering.md`. Direct user instructions and more specific
+repository guidance take precedence.
+<!-- ultron-agentic-workflow:end -->
